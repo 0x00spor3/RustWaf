@@ -23,9 +23,9 @@ pub static XSS_RULES: &[Rule] = &[
     Rule {
         id: "xss-event-handler",
         // Inline event handlers: onerror=, onclick=, onload=, onmouseover=, etc.
-        // Requires '=' immediately after the handler name to avoid matching English
-        // words like "online" or "only" that don't precede an assignment.
-        pattern: r"(?i)\bon\w+\s*=",
+        // Anchored to the real handler names (NOT `on\w+`, which matched benign
+        // query params like ?online=true, ?onsale=1 at Critical/PL1).
+        pattern: r"(?i)\bon(?:error|load|click|mouse\w+|focus|blur|change|submit|key\w+|abort|drag\w+|drop|input|wheel|scroll|toggle|select|reset|resize|contextmenu|animation\w+|transition\w+|play|pause|ended|canplay)\s*=",
         severity: Severity::Critical,
         paranoia: 1,
     },

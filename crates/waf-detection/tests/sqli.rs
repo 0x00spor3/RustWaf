@@ -127,6 +127,45 @@ fn sqli_and_tautology_detected() {
 }
 
 #[test]
+fn sqli_or_tautology_variants_still_detected() {
+    // Recall: the narrowed pattern must still catch every real OR-tautology form.
+    let m = make_sqli();
+    let payloads = ["or 1=1", "or 'a'='a'", "or x=x", "OR 1 = 1", "or \"a\"=\"a\"", "or 1=1--"];
+    for p in payloads {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("q", p)])), "sqli-tautology-or"),
+            "missed: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_and_tautology_still_detected_after_narrowing() {
+    let m = make_sqli(); // PL3 → and-tautology (PL2) active
+    assert!(scores_contains(
+        &m.inspect(&with_query(&[("q", "and 1=1")])),
+        "sqli-tautology-and"
+    ));
+}
+
+#[test]
+fn sqli_tautology_no_fp_on_benign_phrases() {
+    // Traps: `or word=word` / `and word=word` are legitimate English + query
+    // assignments, not tautologies. They blocked at Critical/PL1 before the fix.
+    let m = make_sqli();
+    let traps = [
+        "shoes for men or women=adult",
+        "color or size=large",
+        "store or online=yes",
+        "red and blue=mix",
+    ];
+    for t in traps {
+        let d = m.inspect(&with_query(&[("q", t)]));
+        assert!(matches!(d, Decision::Allow), "false positive on {t}: {d:?}");
+    }
+}
+
+#[test]
 fn sqli_quote_comment_detected() {
     let m = make_sqli();
     let ctx = with_query(&[("name", "admin'--")]);

@@ -117,6 +117,35 @@ fn xss_event_handler_detected() {
 }
 
 #[test]
+fn xss_event_handlers_all_still_detected() {
+    // Recall: every real handler must still fire after narrowing the pattern.
+    let m = make_xss();
+    let payloads = [
+        "onerror=alert(1)",
+        "onload=evil()",
+        "onclick=x()",
+        " onmouseover=",
+        " onkeydown=",
+        "\" onfocus=alert``",
+    ];
+    for p in payloads {
+        assert!(is_scored(&m.inspect(&with_query(&[("q", p)]))), "missed: {p}");
+    }
+}
+
+#[test]
+fn xss_event_handler_no_fp_on_benign_on_params() {
+    // Trap: query params starting with "on" are NOT event handlers. These used to
+    // block at Critical/PL1 because of the old `on\w+\s*=` pattern.
+    let m = make_xss();
+    let traps = ["online=true", "onsale=1", "onboarding=2", "oneday=mon", "only=this", "onward=go"];
+    for t in traps {
+        let d = m.inspect(&with_query(&[("q", t)]));
+        assert!(matches!(d, Decision::Allow), "false positive on {t}: {d:?}");
+    }
+}
+
+#[test]
 fn xss_javascript_protocol_detected() {
     let m = make_xss();
     let ctx = with_query(&[("url", "javascript:alert(document.cookie)")]);

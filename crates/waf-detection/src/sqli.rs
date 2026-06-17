@@ -15,8 +15,12 @@ pub static SQLI_RULES: &[Rule] = &[
     },
     Rule {
         id: "sqli-tautology-or",
-        // OR followed by a comparison: OR 1=1, OR 'a'='a', OR x=x
-        pattern: r#"(?i)\bor\s+[\w'"` ]+\s*=\s*[\w'"` ]"#,
+        // OR <operand> = <operand> where each operand is numeric or a single
+        // (optionally quoted) char: OR 1=1, OR 'a'='a', OR x=x. The regex engine
+        // has no backreferences, so we can't enforce equality; restricting operands
+        // to numeric/single-char rejects benign `or word=word` phrases (e.g.
+        // "men or women=adult") that the old space-in-class `+` pattern flagged.
+        pattern: r#"(?i)\bor\s+(?:\d+|['"`]?\w['"`]?)\s*=\s*(?:\d+|['"`]?\w['"`]?)"#,
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -35,7 +39,8 @@ pub static SQLI_RULES: &[Rule] = &[
     },
     Rule {
         id: "sqli-tautology-and",
-        pattern: r#"(?i)\band\s+[\w'"` ]+\s*=\s*[\w'"` ]"#,
+        // Same narrowing as sqli-tautology-or (rejects benign `and word=word`).
+        pattern: r#"(?i)\band\s+(?:\d+|['"`]?\w['"`]?)\s*=\s*(?:\d+|['"`]?\w['"`]?)"#,
         severity: Severity::Warning,
         paranoia: 2,
     },

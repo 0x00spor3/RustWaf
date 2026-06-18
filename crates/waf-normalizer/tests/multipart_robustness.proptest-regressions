@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e1f08e021653c62bd6a9173587ffa4dceb8dbbfa81956da47ed37ddb61dd490 # shrinks to boundary = "", body = [0, 0]
+cc 53d32a0891108100ef0e73fc24462c9e2b277031907069bb7300a046a4798261 # shrinks to boundary = "A", toks = [Disposition]

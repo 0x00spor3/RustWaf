@@ -1,0 +1,9 @@
+# cargo-fuzz working dirs: generated corpus, crash artifacts, coverage — NOT versioned.
+/corpus
+/artifacts
+/coverage
+/target
+Cargo.lock
+
+# Versioned: the minimal hand-picked seeds under /seeds (see Cargo.toml).
+!/seeds

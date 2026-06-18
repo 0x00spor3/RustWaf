@@ -7,4 +7,7 @@ members = [
     "crates/waf-proxy",
     "crates/waf-corpus",
 ]
+# `fuzz/` is a cargo-fuzz crate (nightly + libFuzzer, Linux/CI only). Excluded so it
+# never breaks `cargo build/test --workspace` on a stable/Windows toolchain.
+exclude = ["fuzz"]
 resolver = "2"

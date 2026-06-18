@@ -1,0 +1,33 @@
+# cargo-fuzz crate (Fase 8). NOT a workspace member — see root Cargo.toml `exclude`.
+# Build/run on Linux (or macOS) with a nightly toolchain:
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run percent_decode
+# libFuzzer is unsupported on Windows, so this crate is CI/Linux-only; the
+# always-on differential invariants live in waf-normalizer/tests/differential.rs.
+[package]
+name = "waf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+waf-core = { path = "../crates/waf-core" }
+waf-normalizer = { path = "../crates/waf-normalizer" }
+
+[[bin]]
+name = "percent_decode"
+path = "fuzz_targets/percent_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multipart"
+path = "fuzz_targets/multipart.rs"
+test = false
+doc = false
+bench = false

@@ -1,6 +1,6 @@
 [proxy]
 listen = "0.0.0.0:8080"
-backend = "http://127.0.0.1:3000"
+backend = "http://127.0.0.1:8000"
 
 [waf]
 mode = "detection-only"

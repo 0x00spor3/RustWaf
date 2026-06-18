@@ -286,7 +286,8 @@ fn sqli_blocks_in_blocking_mode() {
     let mut config = base_config();
     config.waf.mode = WafMode::Blocking;
     config.waf.block_threshold = 5;
-    // union-select is Critical (default 5) → reaches the threshold alone.
+    // union-select is Critical (default = 6, C2 / Fase7-P2, see ARCHITECTURE §7) →
+    // reaches the threshold (5) alone.
     let pipeline = Pipeline::new(&config, vec![Box::new(SqliModule::new())]);
     let mut ctx = with_query(&[("q", "' UNION SELECT 1,2--")]);
     assert!(matches!(pipeline.run(&mut ctx), PipelineVerdict::Block { .. }));

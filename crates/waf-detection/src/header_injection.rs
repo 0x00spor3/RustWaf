@@ -76,6 +76,19 @@ static HEADER_INJECTION_RULES: &[HdrRule] = &[
     },
 ];
 
+/// `(id, pattern, paranoia, is_host_only)` for every header-injection rule. The
+/// single source the Pilastro 3 content prefilter reads for this module (the
+/// `HdrRule`/`Scope` types stay private), so the prefilter cannot drift from these
+/// rules. `is_host_only` is derived from the real `Scope::HostHeaders` — it is the
+/// one rule whose pattern (`[/@]`) is broad and MUST be scanned only against host
+/// header values, never the path/query (else it matches every `/`).
+pub fn rule_meta() -> Vec<(&'static str, &'static str, u8, bool)> {
+    HEADER_INJECTION_RULES
+        .iter()
+        .map(|r| (r.id, r.pattern, r.paranoia, matches!(r.scope, Scope::HostHeaders)))
+        .collect()
+}
+
 // ── module ────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]

@@ -1,0 +1,13 @@
+[package]
+name = "waf-corpus"
+version = "0.1.0"
+edition = "2021"
+
+# Validation corpus (Fase 7 / Pilastro 1): a versioned, reproducible set of
+# malicious + benign cases run against the real pipeline. Library so it is reusable
+# by Pilastro 2 (threshold tuning) and Pilastro 3 (fast-path equivalence oracle).
+[dependencies]
+waf-core = { path = "../waf-core", features = ["testkit"] }
+waf-detection = { path = "../waf-detection" }
+waf-normalizer = { path = "../waf-normalizer" }
+waf-pipeline = { path = "../waf-pipeline" }

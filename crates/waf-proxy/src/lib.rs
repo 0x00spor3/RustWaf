@@ -28,7 +28,7 @@ use waf_detection::{
     path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
     rce::RceModule, request_smuggling::RequestSmugglingModule, sqli::SqliModule, ssrf::SsrfModule,
-    xss::XssModule,
+    xss::XssModule, ContentPrefilter,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
@@ -140,6 +140,10 @@ struct Reloadable {
     backend: String,
     normalizer: Normalizer,
     pipeline: Pipeline,
+    /// Fast-path skip prefilter (Fase 7 / Pillar 3). Built here, in the SAME unit as
+    /// `pipeline`, from the same rule sources and the same `paranoia_level` snapshot,
+    /// so a reload regenerates both together — they can never drift apart.
+    prefilter: ContentPrefilter,
     ip_resolver: ClientIpResolver,
     resilience: ResilienceConfig,
 }
@@ -355,7 +359,13 @@ async fn try_forward(
     // Skip inspection when normalization failed under fail_open (no canonical
     // data to inspect); the request is forwarded uninspected.
     if normalized_ok {
-        let inspection_verdict = rel.pipeline.run_inspection(&mut ctx);
+        // Fast-path (Fase 7 / Pillar 3): the prefilter decides whether any content
+        // rule *could* match the canonical surface. If not, `run_inspection_gated`
+        // skips inspection and returns Allow with an identical decision log. Sound
+        // by construction (the scope-aware union is the OR of every active rule);
+        // equivalence is proven on the corpus oracle through this same gate.
+        let inspect = rel.prefilter.is_candidate(&ctx);
+        let inspection_verdict = rel.pipeline.run_inspection_gated(&mut ctx, inspect);
         if let Some(resp) = deny_response(&ctx, inspection_verdict) {
             return Ok(resp);
         }
@@ -501,6 +511,8 @@ fn build_reloadable(
         backend: config.proxy.backend.trim_end_matches('/').to_string(),
         normalizer: Normalizer::new(&config.limits),
         pipeline,
+        // Same construction point + config snapshot as the pipeline above.
+        prefilter: ContentPrefilter::new(config.waf.paranoia_level),
         ip_resolver,
         resilience: config.resilience,
     }

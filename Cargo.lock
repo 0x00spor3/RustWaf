@@ -603,6 +603,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "waf-corpus"
+version = "0.1.0"
+dependencies = [
+ "waf-core",
+ "waf-detection",
+ "waf-normalizer",
+ "waf-pipeline",
+]
+
+[[package]]
 name = "waf-detection"
 version = "0.1.0"
 dependencies = [

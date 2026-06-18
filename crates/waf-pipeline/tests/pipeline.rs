@@ -339,7 +339,7 @@ fn score_contributions_record_module_rule_severity_and_points() {
     assert_eq!(c.module, "sqli");
     assert_eq!(c.rule_id, "sqli-union-select");
     assert_eq!(c.severity, Some(Severity::Critical));
-    assert_eq!(c.points, 5); // default critical
+    assert_eq!(c.points, 6); // default critical (Fase 7/P2 config C2: 5 -> 6)
 }
 
 #[test]
@@ -360,7 +360,8 @@ fn severity_scores_are_configurable() {
 
 #[test]
 fn single_high_severity_match_blocks_alone() {
-    // One Critical (5) >= threshold (5) blocks on its own.
+    // One Critical (= 6, default C2 / Fase7-P2, see ARCHITECTURE §7) >= threshold
+    // (5) blocks on its own.
     let modules = vec![scores_module("m", vec![("crit", Severity::Critical)])];
     let pipeline = Pipeline::new(&cfg(WafMode::Blocking, 5), modules);
     assert!(matches!(pipeline.run(&mut test_ctx()), PipelineVerdict::Block { .. }));
@@ -390,11 +391,12 @@ fn scores_over_threshold_logged_but_allowed_in_detection_only() {
         "m",
         vec![("c1", Severity::Critical), ("c2", Severity::Critical)],
     )];
-    // 5 + 5 = 10 >= threshold 5, but detection-only never blocks.
+    // 6 + 6 = 12 >= threshold 5 (default critical = 6, Fase 7/P2), but
+    // detection-only never blocks.
     let pipeline = Pipeline::new(&cfg(WafMode::DetectionOnly, 5), modules);
     let mut ctx = test_ctx();
     assert!(matches!(pipeline.run(&mut ctx), PipelineVerdict::Allow));
-    assert_eq!(ctx.score, 10);
+    assert_eq!(ctx.score, 12);
 }
 
 // ── phase split: run_connection / run_inspection ───────────────────────────────

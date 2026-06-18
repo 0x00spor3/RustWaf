@@ -18,8 +18,12 @@ upstream_timeout_ms = 30000           # tetto round-trip upstream (no hang del w
 
 # Point weight per severity class. Each matched rule contributes its severity's
 # weight to the cumulative anomaly score; the request blocks at block_threshold.
+# Config C2 (Fase 7 / Pilastro 2): critical raised 5 -> 6 so a single high-confidence
+# rule blocks with own-merit margin >= 1, while weak signals stay sub-threshold
+# (accumulation-only). Matches the waf-core production default.
+# Source of truth / rationale: ARCHITECTURE §7.
 [waf.severity_scores]
-critical = 5
+critical = 6
 error    = 4
 warning  = 3
 notice   = 2

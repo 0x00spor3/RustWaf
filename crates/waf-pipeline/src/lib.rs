@@ -141,6 +141,25 @@ impl Pipeline {
         verdict
     }
 
+    /// Fast-path gate (Fase 7 / Pillar 3). When `inspect` is true, runs the normal
+    /// content inspection. When false — the caller's `ContentPrefilter` has *proven*
+    /// no content rule can match the canonical surface — SKIPS inspection and returns
+    /// `Allow`, while emitting the **same** final decision log as a clean inspection
+    /// (score 0, allow) so a skipped benign request is indistinguishable in the logs
+    /// from an inspected one (no observability hole).
+    ///
+    /// This is the single gating point shared by the proxy (`handle`) and the
+    /// equivalence oracle (`waf-corpus`), so the property tested is the property run.
+    pub fn run_inspection_gated(&self, ctx: &mut RequestContext, inspect: bool) -> PipelineVerdict {
+        if inspect {
+            self.run_inspection(ctx)
+        } else {
+            let verdict = PipelineVerdict::Allow;
+            self.log_decision(ctx, &verdict);
+            verdict
+        }
+    }
+
     /// Core executor over an arbitrary set of phases. Accumulates score and
     /// returns the verdict; does not emit the final decision log (callers do).
     fn run_phases(&self, ctx: &mut RequestContext, phases: &[Phase]) -> PipelineVerdict {

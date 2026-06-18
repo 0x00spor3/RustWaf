@@ -8,6 +8,9 @@ pub use bytes::Bytes;
 pub mod network;
 pub use network::{ClientIpResolver, IpSource, ResolvedClientIp};
 
+#[cfg(feature = "testkit")]
+pub mod testkit;
+
 // ── Decision / Phase / Module contract ───────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,7 +460,11 @@ pub struct SeverityScores {
     pub notice: u32,
 }
 
-fn default_critical_score() -> u32 { 5 }
+// Critical raised 5 → 6 (Fase 7 / Pilastro 2, config C2): a single high-confidence
+// rule blocks with own-merit margin >= 1 over the default block_threshold (5), while
+// Warning/Notice stay sub-threshold (accumulation-only). Validated on the corpus by
+// waf-corpus `tests/validation.rs` (RECOMMENDED_SEVERITY); rationale in ARCHITECTURE §7.
+fn default_critical_score() -> u32 { 6 }
 fn default_error_score() -> u32 { 4 }
 fn default_warning_score() -> u32 { 3 }
 fn default_notice_score() -> u32 { 2 }

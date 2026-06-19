@@ -24,11 +24,11 @@ use waf_core::{
     WafModule,
 };
 use waf_detection::{
-    header_injection::HeaderInjectionModule, lfi_rfi::LfiRfiModule,
-    path_traversal::PathTraversalModule,
+    header_injection::HeaderInjectionModule, ldap::LdapModule, lfi_rfi::LfiRfiModule,
+    mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
-    rce::RceModule, request_smuggling::RequestSmugglingModule, sqli::SqliModule, ssrf::SsrfModule,
-    xss::XssModule, ContentPrefilter,
+    rce::RceModule, request_smuggling::RequestSmugglingModule, scanner::ScannerModule,
+    sqli::SqliModule, ssrf::SsrfModule, ssti::SstiModule, xss::XssModule, ContentPrefilter,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
@@ -529,6 +529,21 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     }
     if config.modules.ssrf.enabled {
         modules.push(Box::new(SsrfModule::new()));
+    }
+    if config.modules.ldap.enabled {
+        modules.push(Box::new(LdapModule::new()));
+    }
+    if config.modules.nosql.enabled {
+        modules.push(Box::new(NosqlModule::new()));
+    }
+    if config.modules.mail.enabled {
+        modules.push(Box::new(MailModule::new()));
+    }
+    if config.modules.ssti.enabled {
+        modules.push(Box::new(SstiModule::new()));
+    }
+    if config.modules.scanner.enabled {
+        modules.push(Box::new(ScannerModule::new()));
     }
     if config.modules.header_injection.enabled {
         modules.push(Box::new(HeaderInjectionModule::new()));

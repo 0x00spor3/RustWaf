@@ -125,12 +125,17 @@ impl WafModule for RceModule {
             return Decision::Allow;
         };
 
+        // `normalized.path` is inspected too: command injection in the URL PATH
+        // (`/; cat /etc/passwd`, `/cmd=127.0.0.1 && ls /etc`) — gotestwaf rce-urlpath
+        // — bypasses a query/body-only scan. The path is the resolved, decoded form
+        // (Fase 2), so shell metacharacters appear as-is.
+        let path = std::iter::once(ctx.normalized.path.as_str());
         let query = ctx.normalized.query_params.iter().map(|(_, v)| v.as_str());
         let cookies = ctx.normalized.cookies.iter().map(|(_, v)| v.as_str());
         let body_vals = body_str_values(&ctx.normalized.body);
         let body = body_vals.iter().map(String::as_str);
 
-        let matched = all_matches(rule_set, query.chain(cookies).chain(body));
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body));
         if matched.is_empty() {
             return Decision::Allow;
         }

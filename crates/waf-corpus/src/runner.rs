@@ -22,12 +22,17 @@ use waf_core::{
 };
 use waf_detection::ContentPrefilter;
 use waf_detection::header_injection::HeaderInjectionModule;
+use waf_detection::ldap::LdapModule;
 use waf_detection::lfi_rfi::LfiRfiModule;
+use waf_detection::mail::MailModule;
+use waf_detection::nosql::NosqlModule;
 use waf_detection::path_traversal::PathTraversalModule;
 use waf_detection::rce::RceModule;
 use waf_detection::request_smuggling::RequestSmugglingModule;
+use waf_detection::scanner::ScannerModule;
 use waf_detection::sqli::SqliModule;
 use waf_detection::ssrf::SsrfModule;
+use waf_detection::ssti::SstiModule;
 use waf_detection::xss::XssModule;
 use waf_normalizer::Normalizer;
 use waf_pipeline::{Pipeline, PipelineVerdict};
@@ -219,6 +224,11 @@ fn build_pipeline(config: &Config) -> Pipeline {
         Box::new(RceModule::new()),
         Box::new(LfiRfiModule::new()),
         Box::new(SsrfModule::new()),
+        Box::new(LdapModule::new()),
+        Box::new(NosqlModule::new()),
+        Box::new(MailModule::new()),
+        Box::new(SstiModule::new()),
+        Box::new(ScannerModule::new()),
         Box::new(HeaderInjectionModule::new()),
     ];
     Pipeline::new(config, modules)

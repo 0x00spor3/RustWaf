@@ -63,6 +63,11 @@ pub enum Module {
     Rce,
     LfiRfi,
     Ssrf,
+    Ldap,
+    Nosql,
+    Mail,
+    Ssti,
+    Scanner,
     HeaderInjection,
     RequestSmuggling,
 }
@@ -78,6 +83,11 @@ impl Module {
             Module::Rce => "rce",
             Module::LfiRfi => "lfi_rfi",
             Module::Ssrf => "ssrf",
+            Module::Ldap => "ldap",
+            Module::Nosql => "nosql",
+            Module::Mail => "mail",
+            Module::Ssti => "ssti",
+            Module::Scanner => "scanner",
             Module::HeaderInjection => "header_injection",
             Module::RequestSmuggling => "request_smuggling",
         }
@@ -116,10 +126,26 @@ pub enum Expect {
     Triggers,
     /// Benign / trap: nothing must fire.
     Clean,
-    /// A documented detection gap (e.g. SSRF decimal metadata). Tracked in metrics
-    /// but never gates CI — if it ever starts triggering, that is a *good*
-    /// regression the report surfaces.
-    ExpectedMiss,
+    /// A documented detection gap. Tracked in metrics, never gates recall — but the
+    /// deferral is **machine-checkable**: `until_phase` says WHEN it must close.
+    /// - `Some("10c")` — a gap a future phase WILL fix (e.g. a Base64Flat payload that
+    ///   only fires once §6 base64-decodes). Once [`CURRENT_PHASE`] reaches it, the
+    ///   oracle FLIPS expectation: it must now trigger, or the build fails.
+    /// - `None` — a permanent documented limit (e.g. an encoding §6 deliberately does
+    ///   not handle). Never expected to close.
+    /// Either way, a gap that fires *ahead* of its phase is a good regression to promote.
+    ExpectedMiss { until_phase: Option<&'static str> },
+}
+
+/// The phase the corpus is currently validated at. `ExpectedMiss { until_phase }` rows
+/// whose phase is `<=` this MUST be caught (the oracle enforces the flip). Bump this when
+/// a phase lands, so its deferred gaps become required triggers.
+pub const CURRENT_PHASE: &str = "10a";
+
+/// Has `until_phase` been reached at `current`? Phases in the `10x` family order by their
+/// string (`"10a" < "10b" < "10c"`), which is the only family `until_phase` uses.
+pub fn phase_reached(until_phase: &str, current: &str) -> bool {
+    current >= until_phase
 }
 
 /// One corpus case. The payload lives in [`Field`]; `desc` carries the reason.
@@ -199,8 +225,8 @@ pub fn evaluate(case: &Case, result: &RunResult) -> CaseResult {
                 CaseResult::Pass
             }
         }
-        // Documented gap: never gates. The report (later) distinguishes
-        // "still missed" from "now caught".
-        Expect::ExpectedMiss => CaseResult::Pass,
+        // Documented gap: never gates recall here. The phase-flip is enforced by the
+        // dedicated oracle test (`expected_miss_phase_deferrals_honored`).
+        Expect::ExpectedMiss { .. } => CaseResult::Pass,
     }
 }

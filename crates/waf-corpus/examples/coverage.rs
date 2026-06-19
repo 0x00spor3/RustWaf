@@ -97,7 +97,7 @@ fn main() {
                         .push(format!("{} -> {:?}", case.id, outcome.matched_rules));
                 }
             }
-            Expect::ExpectedMiss => expected_miss.push((case.id.to_string(), outcome.triggered)),
+            Expect::ExpectedMiss { .. } => expected_miss.push((case.id.to_string(), outcome.triggered)),
         }
     }
 

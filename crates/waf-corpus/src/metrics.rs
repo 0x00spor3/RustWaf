@@ -92,6 +92,8 @@ pub struct Overlap {
 pub struct ExpectedMissStatus {
     pub case_id: String,
     pub still_missed: bool,
+    /// `Some(phase)` = must close by that phase; `None` = permanent documented limit.
+    pub until_phase: Option<&'static str>,
 }
 
 /// A full corpus run at a given execution paranoia level.
@@ -166,10 +168,11 @@ impl Report {
                                 .push((case.id.to_string(), outcome.matched_rules.clone()));
                         }
                     }
-                    Expect::ExpectedMiss => {
+                    Expect::ExpectedMiss { until_phase } => {
                         expected_miss.push(ExpectedMissStatus {
                             case_id: case.id.to_string(),
                             still_missed: !outcome.triggered,
+                            until_phase,
                         });
                     }
                 }
@@ -377,7 +380,7 @@ impl BlockingReport {
                             benign_blocking_ids.push(case.id.to_string());
                         }
                     }
-                    Expect::ExpectedMiss => {}
+                    Expect::ExpectedMiss { .. } => {}
                 }
             }
 

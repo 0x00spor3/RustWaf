@@ -7,12 +7,17 @@
 use crate::Case;
 
 pub mod header_injection;
+pub mod ldap;
 pub mod lfi_rfi;
+pub mod mail;
+pub mod nosql;
 pub mod path_traversal;
 pub mod rce;
 pub mod request_smuggling;
+pub mod scanner;
 pub mod sqli;
 pub mod ssrf;
+pub mod ssti;
 pub mod xss;
 
 /// All per-module case tables, in module order.
@@ -23,6 +28,11 @@ pub static MODULE_TABLES: &[&[Case]] = &[
     rce::CASES,
     lfi_rfi::CASES,
     ssrf::CASES,
+    ldap::CASES,
+    nosql::CASES,
+    mail::CASES,
+    ssti::CASES,
+    scanner::CASES,
     header_injection::CASES,
     request_smuggling::CASES,
 ];

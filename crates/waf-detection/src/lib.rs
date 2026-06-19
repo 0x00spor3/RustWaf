@@ -1,11 +1,16 @@
 pub mod header_injection;
+pub mod ldap;
 pub mod lfi_rfi;
+pub mod mail;
+pub mod nosql;
 pub mod path_traversal;
 pub mod rate_limit;
 pub mod rce;
 pub mod request_smuggling;
+pub mod scanner;
 pub mod sqli;
 pub mod ssrf;
+pub mod ssti;
 pub mod xss;
 
 use regex::RegexSet;
@@ -83,6 +88,11 @@ pub fn content_rules_split(paranoia: u8) -> (RuleList, RuleList) {
         rce::RCE_RULES,
         lfi_rfi::LFI_RFI_RULES,
         ssrf::SSRF_RULES,
+        ldap::LDAP_RULES,
+        nosql::NOSQL_RULES,
+        mail::MAIL_RULES,
+        ssti::SSTI_RULES,
+        scanner::SCANNER_RULES,
     ] {
         for r in table.iter().filter(|r| r.paranoia <= paranoia) {
             main.push((r.id, r.pattern));

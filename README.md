@@ -13,11 +13,14 @@ strutturato), *sicuro by design* (fail-open / fail-closed espliciti per-scenario
 
 ## Capacità
 
-| Detection | Fase | Note |
+| Detection | Superficie | Note |
 |---|---|---|
-| SQLi, XSS, RCE/Cmd-inj, LFI/RFI, SSRF | body/query/cookie | content-inspection regex su dati canonicalizzati |
+| SQLi, XSS, LFI/RFI, SSRF | body/query/cookie | content-inspection regex su dati canonicalizzati |
+| RCE/Cmd-inj | path + body/query/cookie | include la command-injection nel path URL (gotestwaf rce-urlpath) |
+| LDAP, NoSQL, Mail (SMTP/IMAP), SSTI | body/query/cookie | injection per categoria, firme inequivocabili → Critical |
+| Scanner / tool fingerprint | User-Agent | sqlmap/nuclei/OpenVAS/ffuf/… + domini OOB (Collaborator/interactsh/oast) |
 | Path traversal | request_line | path + query/cookie/body |
-| Header injection (CRLF) | headers | field-aware (scope per regola) |
+| Header injection (CRLF) | path + headers/query/cookie/body | field-aware (scope per regola); CRLF smugglato nel path URL |
 | Request smuggling (CL/TE) | connection | validazione strutturale del framing → 400 |
 | Rate limiting L7 | connection | token bucket per IP risolto |
 

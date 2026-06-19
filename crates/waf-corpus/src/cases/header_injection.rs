@@ -1,8 +1,8 @@
 //! Header-injection (CRLF / response-splitting) corpus cases. Field-aware: rules
 //! carry a scope (All / NonBody / HostHeaders / Body). The live surface is CRLF
-//! percent-encoded in query/body params (hyper rejects raw CR/LF in headers) plus
-//! Host absolute-URI injection. The normalizer trims header values, so CR/LF is
-//! injected via %0d%0a in query/body.
+//! percent-encoded in query/body params (hyper rejects raw CR/LF in headers), in the
+//! URL PATH (Fase 10a B2 — gotestwaf crlf), plus Host absolute-URI injection. The
+//! normalizer trims header values, so CR/LF is injected via %0d%0a in query/body/path.
 //! Rules (paranoia): hdr-crlf-header-injection 1 (All), hdr-crlf-control-char 2
 //! (NonBody), hdr-host-injection 2 (HostHeaders), hdr-crlf-in-body 3 (Body).
 
@@ -83,5 +83,54 @@ pub static CASES: &[Case] = &[
         expect: Expect::Clean,
         rules: &[],
         desc: "ordinary query value, no control characters",
+    },
+    // ── URL-PATH CRLF injection (Fase 10a B2) — gotestwaf crlf ────────────────────
+    Case {
+        id: "hdr-crlf-path-setcookie",
+        module: Module::HeaderInjection,
+        field: Field::Path("/%0d%0aSet-Cookie:crlf=injection"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["hdr-crlf-header-injection"],
+        desc: "CR/LF + Set-Cookie smuggled in the URL path — gotestwaf crlf (Plain)",
+    },
+    Case {
+        id: "hdr-crlf-path-lf-cr",
+        module: Module::HeaderInjection,
+        field: Field::Path("/%0a%0dSet-cookie:crlf=injection"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["hdr-crlf-header-injection"],
+        desc: "reversed LF/CR + Set-Cookie in the URL path — gotestwaf crlf (Plain)",
+    },
+    Case {
+        id: "hdr-crlf-path-double-encoded",
+        module: Module::HeaderInjection,
+        field: Field::Path("/%25%30%41%25%30%44Set-cookie:crlf=injection"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["hdr-crlf-header-injection"],
+        desc: "double-encoded CR/LF (%25%30%41…) in the path — resolved by Fase 2 second decode",
+    },
+    Case {
+        id: "hdr-crlf-path-overlong-unicode",
+        module: Module::HeaderInjection,
+        // %e5%98%8d is VALID UTF-8 (U+560D 嘍), not a CR/LF — the normalizer keeps it
+        // as the character, so no CR/LF ever appears. Catching this needs best-fit /
+        // overlong mapping the normalizer deliberately does NOT do (§6). Permanent gap.
+        field: Field::Path("/%e5%98%8dSet-cookie%3acrlf%3dinjection"),
+        min_pl: 1,
+        expect: Expect::ExpectedMiss { until_phase: None },
+        rules: &[],
+        desc: "overlong-unicode CR/LF — documented limit, normalizer decodes to 嘍 not CR/LF",
+    },
+    Case {
+        id: "hdr-benign-path-text",
+        module: Module::HeaderInjection,
+        field: Field::Path("/api/v1/articles/2024/summary.html"),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "ordinary multi-segment path, no CR/LF — must NOT flag now path is inspected",
     },
 ];

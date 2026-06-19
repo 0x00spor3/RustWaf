@@ -425,6 +425,16 @@ pub struct ModulesConfig {
     #[serde(default)]
     pub ssrf: ModuleConfig,
     #[serde(default)]
+    pub ldap: ModuleConfig,
+    #[serde(default)]
+    pub nosql: ModuleConfig,
+    #[serde(default)]
+    pub mail: ModuleConfig,
+    #[serde(default)]
+    pub ssti: ModuleConfig,
+    #[serde(default)]
+    pub scanner: ModuleConfig,
+    #[serde(default)]
     pub header_injection: ModuleConfig,
     /// HTTP request-smuggling framing checks (CL/TE). Structural security control,
     /// default on (see ARCHITECTURE §8).

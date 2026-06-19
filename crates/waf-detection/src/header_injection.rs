@@ -12,17 +12,20 @@ use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, Waf
 //   2. Host header injection to an absolute URI (`Host: http://evil`), which
 //      hyper DOES allow (no control chars).
 //
+//   3. CRLF smuggled (percent-encoded) into the URL PATH — `/%0d%0aSet-Cookie:…` —
+//      which Fase 2 decodes into `normalized.path`; same response-splitting risk.
+//
 // This is the first FIELD-AWARE module: rules carry a `scope` so that bare CR/LF
-// is flagged where it is anomalous (query/cookie/header) but tolerated in the
+// is flagged where it is anomalous (path/query/cookie/header) but tolerated in the
 // body (legit textarea line breaks) except at high paranoia. `Phase::Headers`
 // only sets pipeline ORDERING — not which fields are inspected (all normalized
 // fields are available regardless of phase).
 
 #[derive(Clone, Copy, PartialEq)]
 enum Scope {
-    /// query params + cookies + header values + body.
+    /// path + query params + cookies + header values + body.
     All,
-    /// query params + cookies + header values (NOT body — textarea-safe).
+    /// path + query params + cookies + header values (NOT body — textarea-safe).
     NonBody,
     /// values of `host` / `x-forwarded-host` headers only.
     HostHeaders,
@@ -140,7 +143,11 @@ impl WafModule for HeaderInjectionModule {
             return Decision::Allow;
         }
 
-        // Build the per-scope value sets once.
+        // Build the per-scope value sets once. The path is included in All/NonBody:
+        // CRLF smuggled into the URL PATH (`/%0d%0aSet-Cookie:…`, gotestwaf crlf)
+        // decodes to CR/LF in `normalized.path` (Fase 2) and would otherwise bypass a
+        // query/body-only scan. A legitimate path never carries CR/LF.
+        let path: &str = ctx.normalized.path.as_str();
         let query: Vec<&str> = ctx.normalized.query_params.iter().map(|(_, v)| v.as_str()).collect();
         let cookies: Vec<&str> = ctx.normalized.cookies.iter().map(|(_, v)| v.as_str()).collect();
         let headers: Vec<&str> = ctx.normalized.headers.iter().map(|(_, v)| v.as_str()).collect();
@@ -153,10 +160,12 @@ impl WafModule for HeaderInjectionModule {
         for (rule, re) in &self.rules {
             let matched = match rule.scope {
                 Scope::All => {
-                    query.iter().chain(&cookies).chain(&headers).chain(&body).any(|v| re.is_match(v))
+                    re.is_match(path)
+                        || query.iter().chain(&cookies).chain(&headers).chain(&body).any(|v| re.is_match(v))
                 }
                 Scope::NonBody => {
-                    query.iter().chain(&cookies).chain(&headers).any(|v| re.is_match(v))
+                    re.is_match(path)
+                        || query.iter().chain(&cookies).chain(&headers).any(|v| re.is_match(v))
                 }
                 Scope::HostHeaders => hosts.iter().any(|v| re.is_match(v)),
                 Scope::Body => body.iter().any(|v| re.is_match(v)),

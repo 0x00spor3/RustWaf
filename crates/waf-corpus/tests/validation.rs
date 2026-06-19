@@ -153,23 +153,34 @@ fn recommended_config_ladder_properties() {
 }
 
 #[test]
-fn expected_miss_gaps_still_missed() {
+fn expected_miss_phase_deferrals_honored() {
+    use waf_corpus::{phase_reached, CURRENT_PHASE};
     let report = Report::run(BASELINE_PARANOIA);
-    let now_caught: Vec<&String> = report
-        .expected_miss
-        .iter()
-        .filter(|e| !e.still_missed)
-        .map(|e| &e.case_id)
-        .collect();
-    // If one of these fires, the gap closed — promote it from ExpectedMiss to a
-    // Triggers case (a good regression), then re-baseline.
+
+    // Machine-checkable deferral: a gap whose `until_phase` has ARRIVED must now be
+    // caught (else the build fails — implement it or it's a regression); a gap that
+    // fires AHEAD of its phase, or a permanent (`None`) gap that starts firing, is a
+    // good regression to promote.
+    let mut due_but_missed: Vec<&String> = Vec::new();
+    let mut early_caught: Vec<&String> = Vec::new();
+    for e in &report.expected_miss {
+        let due = matches!(e.until_phase, Some(p) if phase_reached(p, CURRENT_PHASE));
+        if due {
+            if e.still_missed {
+                due_but_missed.push(&e.case_id);
+            }
+        } else if !e.still_missed {
+            early_caught.push(&e.case_id);
+        }
+    }
     assert!(
-        now_caught.is_empty(),
-        "ExpectedMiss gaps now caught (promote to Triggers): {now_caught:?}"
+        due_but_missed.is_empty(),
+        "ExpectedMiss past its until_phase at {CURRENT_PHASE} but still missed — implement it (or it is a regression): {due_but_missed:?}"
     );
-    let (still, total) = report.expected_miss_still_missed();
-    assert_eq!(still, total, "all §8 gaps must remain missed at baseline");
-    assert_eq!(total, 3, "the three §8 gaps must be present in the corpus");
+    assert!(
+        early_caught.is_empty(),
+        "ExpectedMiss caught ahead of its phase (promote to Triggers, re-baseline): {early_caught:?}"
+    );
 }
 
 // ── Pilastro 3: fast-path equivalence oracle ───────────────────────────────────
@@ -272,7 +283,8 @@ fn prefilter_covers_all_active_content_rules() {
     // drift a loud failure instead of a security hole.
     use std::collections::BTreeSet;
     use waf_detection::{
-        header_injection, lfi_rfi, path_traversal, rce, sqli, ssrf, xss, ContentPrefilter,
+        header_injection, ldap, lfi_rfi, mail, nosql, path_traversal, rce, scanner, sqli, ssrf,
+        ssti, xss, ContentPrefilter,
     };
 
     for pl in [1u8, 2, 3, 4] {
@@ -284,6 +296,11 @@ fn prefilter_covers_all_active_content_rules() {
             rce::RCE_RULES,
             lfi_rfi::LFI_RFI_RULES,
             ssrf::SSRF_RULES,
+            ldap::LDAP_RULES,
+            nosql::NOSQL_RULES,
+            mail::MAIL_RULES,
+            ssti::SSTI_RULES,
+            scanner::SCANNER_RULES,
         ] {
             for r in table.iter().filter(|r| r.paranoia <= pl) {
                 expected.insert(r.id);

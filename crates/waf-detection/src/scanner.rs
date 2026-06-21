@@ -25,8 +25,10 @@ pub static SCANNER_RULES: &[Rule] = &[
         id: "scanner-tool-ua",
         // Known offensive-security tool fingerprints. `\b` anchors keep `nmap` from
         // matching `roadmap`/`sitemap`. `fuzz faster u fool` is ffuf's UA string;
-        // `\.nasl` is the Nessus/OpenVAS plugin script suffix.
-        pattern: r"(?i)\b(?:sqlmap|nikto|nuclei|openvas|nessus|acunetix|netsparker|wpscan|dirbuster|gobuster|masscan|nmap|hydra|w3af|arachni|zaproxy|burpsuite|fuzz faster u fool|ffuf|wfuzz)\b|\.nasl\b",
+        // `\.nasl` is the Nessus/OpenVAS plugin script suffix. `openvas\w*` tolerates a
+        // glued suffix — gotestwaf's real UA is `…OpenVASVT` (no separator), which a bare
+        // `openvas\b` missed (10c REOPEN, pcap-confirmed); the prefix is unambiguous.
+        pattern: r"(?i)\b(?:sqlmap|nikto|nuclei|openvas\w*|nessus|acunetix|netsparker|wpscan|dirbuster|gobuster|masscan|nmap|hydra|w3af|arachni|zaproxy|burpsuite|fuzz faster u fool|ffuf|wfuzz)\b|\.nasl\b",
         severity: Severity::Critical,
         paranoia: 1,
     },

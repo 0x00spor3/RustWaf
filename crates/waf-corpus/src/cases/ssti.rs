@@ -41,7 +41,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "ssti-jinja-arithmetic-b64",
         module: Module::Ssti,
-        field: Field::Query { name: "name", value: "e3sxMzM3KjEzMzh9fQ==" },
+        field: Field::Query { name: "name", value: "e3sxMzM3KjEzMzh9fQ" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["ssti-template-arithmetic"],
@@ -61,12 +61,22 @@ pub static CASES: &[Case] = &[
         module: Module::Ssti,
         field: Field::Query {
             name: "tpl",
-            value: "PCNhc3NpZ24gZXggPSAiZnJlZW1hcmtlci50ZW1wbGF0ZS51dGlsaXR5LkV4ZWN1dGUiP25ldygpPiR7IGV4KCJpZCIpfQ==",
+            value: "PCNhc3NpZ24gZXggPSAiZnJlZW1hcmtlci50ZW1wbGF0ZS51dGlsaXR5LkV4ZWN1dGUiP25ldygpPiR7IGV4KCJpZCIpfQ",
         },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["ssti-freemarker-directive"],
         desc: "base64(FreeMarker `<#assign…Execute…>`) — caught at 10c via base64-decode",
+    },
+    // ── URLPath coverage (10c REOPEN, pcap) ──────────────────────────────────────
+    Case {
+        id: "ssti-urlpath-arith",
+        module: Module::Ssti,
+        field: Field::Path("/{{1337*1338}}"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ssti-template-arithmetic"],
+        desc: "Jinja arithmetic in the URL PATH — gotestwaf sst-injection URLPath; path now inspected",
     },
     // ── benign guards (must stay 200): template delimiters WITHOUT eval payload ───
     Case {

@@ -169,7 +169,7 @@ pub static CASES: &[Case] = &[
         // on `../../`). Bite-verified: break base64-decode → this goes RED.
         id: "pt-gotestwaf-faro-base64-query",
         module: Module::PathTraversal,
-        field: Field::Query { name: "file", value: "L3N0YXRpYy9pbWcvLi4vLi4vZXRjL3Bhc3N3ZA==" },
+        field: Field::Query { name: "file", value: "L3N0YXRpYy9pbWcvLi4vLi4vZXRjL3Bhc3N3ZA" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["pt-sensitive-unix"],

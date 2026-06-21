@@ -40,11 +40,14 @@ pub static CASES: &[Case] = &[
     Case {
         id: "scanner-openvas-ua",
         module: Module::Scanner,
-        field: Field::Header { name: "user-agent", value: "Mozilla/5.0 [en] (X11, U; OpenVAS-VT 22.4.1)" },
+        // WIRE-FAITHFUL (10c REOPEN): gotestwaf's real payload is `…OpenVASVT` with the
+        // `VT` GLUED on (no separator). The old fixture used `OpenVAS-VT` (hyphen), which a
+        // bare `openvas\b` matched → green-but-unfaithful while the real UA bypassed.
+        field: Field::Header { name: "user-agent", value: "Microsoft WinRM Client OpenVASVT" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["scanner-tool-ua"],
-        desc: "OpenVAS UA fingerprint — gotestwaf community-user-agent",
+        desc: "OpenVAS UA fingerprint with glued suffix (OpenVASVT) — gotestwaf community-user-agent",
     },
     Case {
         id: "scanner-nasl-ua",

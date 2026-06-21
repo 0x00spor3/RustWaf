@@ -42,7 +42,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "ldap-logical-filter-b64",
         module: Module::Ldap,
-        field: Field::Query { name: "user", value: "KCYodWlkPWFkbWluKSghKCYoMT0wKSh1c2VyUGFzc3dvcmQ9cSkpKSk=" },
+        field: Field::Query { name: "user", value: "KCYodWlkPWFkbWluKSghKCYoMT0wKSh1c2VyUGFzc3dvcmQ9cSkpKSk" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["ldap-logical-filter"],
@@ -51,7 +51,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "ldap-objectclass-enum-b64",
         module: Module::Ldap,
-        field: Field::Query { name: "search", value: "Kih8KG9iamVjdGNsYXNzPSopKQ==" },
+        field: Field::Query { name: "search", value: "Kih8KG9iamVjdGNsYXNzPSopKQ" },
         min_pl: 1,
         expect: Expect::Triggers,
         // decodes to `*(|(objectclass=*))` → the `(|(` compound-filter signature, so
@@ -67,6 +67,16 @@ pub static CASES: &[Case] = &[
         expect: Expect::Triggers,
         rules: &["ldap-extensible-match"],
         desc: "base64(`userPassword:2.5.13.18:=123`) — caught at 10c via base64-decode",
+    },
+    // ── URLPath coverage (10c REOPEN, pcap) ──────────────────────────────────────
+    Case {
+        id: "ldap-urlpath-filter",
+        module: Module::Ldap,
+        field: Field::Path("/(&(uid=admin)(!(&(1=0)(userPassword=q))))"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ldap-logical-filter"],
+        desc: "compound LDAP filter in the URL PATH — gotestwaf ldap-injection URLPath; path now inspected",
     },
     // ── benign guards (must stay 200): the FP traps of this class ────────────────
     Case {

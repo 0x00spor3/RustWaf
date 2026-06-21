@@ -42,11 +42,21 @@ pub static CASES: &[Case] = &[
     Case {
         id: "ssi-exec-directive-b64",
         module: Module::Ssi,
-        field: Field::Query { name: "q", value: "PCEtLSNleGVjIGNtZD1pZC0tPg==" },
+        field: Field::Query { name: "q", value: "PCEtLSNleGVjIGNtZD1pZC0tPg" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["ssi-directive"],
         desc: "base64(`<!--#exec cmd=id-->`) — caught at 10c via base64-decode",
+    },
+    // ── URLPath coverage (10c REOPEN, pcap) ──────────────────────────────────────
+    Case {
+        id: "ssi-urlpath-exec",
+        module: Module::Ssi,
+        field: Field::Path("/<!--#exec cmd=id-->"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ssi-directive"],
+        desc: "SSI #exec directive in the URL PATH — gotestwaf ss-include URLPath; path now inspected",
     },
     // ── benign guards (must stay 200) ────────────────────────────────────────────
     Case {

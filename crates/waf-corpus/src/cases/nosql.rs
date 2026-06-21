@@ -75,6 +75,16 @@ pub static CASES: &[Case] = &[
         rules: &["nosql-operator"],
         desc: "base64(`', $or: [ {}, …`) — caught at 10c via base64-decode (Warning/PL2)",
     },
+    // ── URLPath coverage (10c REOPEN, pcap) ──────────────────────────────────────
+    Case {
+        id: "nosql-urlpath-where",
+        module: Module::Nosql,
+        field: Field::Path("/q=true, $where: '99 == 88'"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["nosql-where-js"],
+        desc: "$where JS injection in the URL PATH — gotestwaf nosql-injection URLPath; path now inspected",
+    },
     // ── benign guards (must stay 200): the FP traps of this class ────────────────
     Case {
         id: "nosql-benign-json-schema-field",

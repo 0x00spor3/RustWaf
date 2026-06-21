@@ -71,7 +71,11 @@ impl WafModule for MailModule {
         let body = body_vals.iter().map(String::as_str);
         let derived = ctx.normalized.derived_decoded.iter().map(String::as_str);
 
-        let matched = all_matches(rule_set, query.chain(cookies).chain(body).chain(derived));
+        // URLPath coverage (10c REOPEN, pcap-confirmed): gotestwaf places payloads in the
+        // URL PATH; this module must scan the resolved path too (mirrors rce/xss), else a
+        // path-placed payload bypasses. The prefilter already scans the path (sound).
+        let path = std::iter::once(ctx.normalized.path.as_str());
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived));
         if matched.is_empty() {
             return Decision::Allow;
         }

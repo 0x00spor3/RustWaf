@@ -149,11 +149,18 @@ pub fn decode_overlong_utf8(input: &str) -> String {
 /// if it matches a module rule (decode-then-match-then-discard). Probe-verified
 /// `benign_FP=[]` at every threshold.
 pub fn is_base64_candidate(s: &str, len_min: usize) -> bool {
-    if s.len() < len_min || s.len() % 4 != 0 {
+    if s.len() < len_min {
         return false;
     }
     let core = s.trim_end_matches('=');
-    !core.is_empty() && core.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/')
+    // base64 quanta encode to 2/3/4 chars per group → a core length of `%4 == 1` is
+    // IMPOSSIBLE; everything else (0/2/3) is valid. We must NOT require `%4 == 0`: that
+    // only holds for PADDED base64, but gotestwaf (and many real encoders) emit UNPADDED
+    // base64 — `%4 ∈ {2,3}` — which the old gate silently rejected, so the decode-then-
+    // match channel never saw the payload (10c REOPEN, pcap-confirmed: 72/106 wire values).
+    !core.is_empty()
+        && core.len() % 4 != 1
+        && core.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/')
 }
 
 /// Hand-rolled standard base64 decode (alphabet `+/`, `=` padding). Returns `None`

@@ -94,7 +94,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "rce-chained-command-b64",
         module: Module::Rce,
-        field: Field::Query { name: "q", value: "OyBjYXQgL2V0Yy9wYXNzd2Q=" },
+        field: Field::Query { name: "q", value: "OyBjYXQgL2V0Yy9wYXNzd2Q" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["rce-chained-command"],

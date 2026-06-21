@@ -119,12 +119,22 @@ pub static CASES: &[Case] = &[
         module: Module::Sqli,
         field: Field::Query {
             name: "id",
-            value: "MSBVTklPTiBTRUxFQ1QgdXNlciBGUk9NIGluZm9ybWF0aW9uX3NjaGVtYS50YWJsZXM=",
+            value: "MSBVTklPTiBTRUxFQ1QgdXNlciBGUk9NIGluZm9ybWF0aW9uX3NjaGVtYS50YWJsZXM",
         },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["sqli-union-select", "sqli-information-schema"],
         desc: "base64(`1 UNION SELECT user FROM information_schema.tables`) — caught at 10c via base64-decode",
+    },
+    // ── URLPath coverage (10c REOPEN, pcap): gotestwaf places payloads in the path ──
+    Case {
+        id: "sqli-urlpath-timebased",
+        module: Module::Sqli,
+        field: Field::Path("/(select(0)from(select(sleep(15)))v)"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-time-based"],
+        desc: "blind time-based SQLi in the URL PATH — gotestwaf sql-injection URLPath; path now inspected",
     },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {

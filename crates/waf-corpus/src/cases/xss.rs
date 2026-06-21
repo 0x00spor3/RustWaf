@@ -129,7 +129,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "xss-script-tag-b64",
         module: Module::Xss,
-        field: Field::Query { name: "q", value: "PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==" },
+        field: Field::Query { name: "q", value: "PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["xss-script-tag"],

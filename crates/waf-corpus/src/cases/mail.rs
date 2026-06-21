@@ -42,7 +42,7 @@ pub static CASES: &[Case] = &[
     Case {
         id: "mail-imap-capability-b64",
         module: Module::Mail,
-        field: Field::Query { name: "id", value: "VjEwMCBDQVBBQklMSVRZDQpWMTAxIEZFVENIIDQ3OTE=" },
+        field: Field::Query { name: "id", value: "VjEwMCBDQVBBQklMSVRZDQpWMTAxIEZFVENIIDQ3OTE" },
         min_pl: 1,
         expect: Expect::Triggers,
         rules: &["mail-command-injection"],
@@ -65,6 +65,16 @@ pub static CASES: &[Case] = &[
         expect: Expect::Triggers,
         rules: &["mail-command-injection"],
         desc: "base64(`\\nRCPT TO: test@evil.com\\n`) — caught at 10c via base64-decode",
+    },
+    // ── URLPath coverage (10c REOPEN, pcap): CRLF survives path normalization ─────
+    Case {
+        id: "mail-urlpath-rcpt",
+        module: Module::Mail,
+        field: Field::Path("/x%0d%0aRCPT TO: test@evil.com%0d%0a"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["mail-command-injection"],
+        desc: "SMTP RCPT injection in the URL PATH — gotestwaf mail-injection URLPath (overlaps hdr-crlf, declared)",
     },
     // ── benign guards (must stay 200): CR/LF-free, so they isolate the mail rule ──
     Case {

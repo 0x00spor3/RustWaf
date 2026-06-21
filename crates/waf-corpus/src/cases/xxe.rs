@@ -112,6 +112,16 @@ pub static CASES: &[Case] = &[
         rules: &["rfi-remote-url"],
         desc: "external <xs:include> schema XXE — native schema detection deferred (indistinguishable from benign XSD); the external URL is caught by rfi-remote-url (Notice, defense-in-depth)",
     },
+    // ── URLPath coverage (10c REOPEN, pcap): scheme-less SYSTEM id isolates xxe ───
+    Case {
+        id: "xxe-urlpath-entity",
+        module: Module::Xxe,
+        field: Field::Path("/<!ENTITY xxe SYSTEM '//attacker/x'>"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["xxe-entity-declaration"],
+        desc: "external-entity declaration in the URL PATH — gotestwaf xml-injection; path now inspected",
+    },
     // ── benign guards (must stay 200) ────────────────────────────────────────────
     Case {
         id: "xxe-benign-html5-doctype",

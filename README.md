@@ -16,10 +16,11 @@ strutturato), *sicuro by design* (fail-open / fail-closed espliciti per-scenario
 | Detection | Superficie | Note |
 |---|---|---|
 | SQLi, XSS, LFI/RFI, SSRF | body/query/cookie | content-inspection regex su dati canonicalizzati |
-| RCE/Cmd-inj | path + body/query/cookie | include la command-injection nel path URL (gotestwaf rce-urlpath) |
+| RCE/Cmd-inj | path + body/query/cookie | command-injection (anche nel path URL), expression-language `${@print(…)}`/SpEL, webshell **VBScript/ASP** (`On Error Resume Next`, `Server.*`, `CreateObject`) |
+| SQLi (MSSQL proc) | body/query/cookie | stored-procedure OS-exec `xp_cmdshell`/`sp_oacreate`/… invocation-anchored (no FP su prosa) |
 | LDAP, NoSQL, Mail (SMTP/IMAP), SSTI | body/query/cookie | injection per categoria, firme inequivocabili → Critical |
 | SSI (Server-Side Includes) | body/query/cookie | direttiva `<!--#exec\|include\|printenv\|…` → Critical |
-| XXE (XML External Entity) | body/query/cookie | `<!ENTITY` / `<!DOCTYPE…SYSTEM` / `encoding="UTF-7"` → Critical |
+| XXE (XML External Entity) | body/query/cookie | `<!ENTITY` / `<!DOCTYPE…SYSTEM` / `encoding="UTF-7"` / external-schema (`xs:include namespace=`, `xsi:schemaLocation` URL singolo) → Critical |
 | Scanner / tool fingerprint | User-Agent | sqlmap/nuclei/OpenVAS/ffuf/… + domini OOB (Collaborator/interactsh/oast) |
 | Path traversal | request_line | path + query/cookie/body |
 | Header injection (CRLF) | path + headers/query/cookie/body | field-aware (scope per regola); CRLF smugglato nel path URL |
@@ -27,7 +28,9 @@ strutturato), *sicuro by design* (fail-open / fail-closed espliciti per-scenario
 | Rate limiting L7 | connection | token bucket per IP risolto |
 
 Più: normalizzazione anti-evasione (percent-decode anti-doppia-codifica + NFKC +
-collapse-overlong UTF-8 pipeline-wide + canale base64-derived `decode-then-match-then-discard`),
+collapse-overlong UTF-8 pipeline-wide + **canale derivato multi-trasformazione**
+`decode-then-match-then-discard`: base64, HTML-entity-decode di evasione, mid-token
+tag-strip/control-strip, de-obf VBScript-concat — composte anche sulle varianti base64),
 anomaly scoring cumulativo configurabile, livelli di paranoia (PL1–4), config esterna
 con hot reload (SIGHUP, Unix), risoluzione IP client trusted-proxy, e un **fast-path**
 che salta l'ispezione sul traffico provabilmente benigno (equivalenza testata).

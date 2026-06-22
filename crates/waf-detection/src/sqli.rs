@@ -96,6 +96,19 @@ pub static SQLI_RULES: &[Rule] = &[
         severity: Severity::Notice,
         paranoia: 3,
     },
+    Rule {
+        id: "sqli-mssql-dangerous-proc",
+        // MSSQL extended/OLE-automation stored procedures that grant OS-level command
+        // execution, registry/file access or outbound HTTP (gotestwaf sql-injection:
+        // `EXEC Master.dbo.xp_cmdshell @c`). The proc name is INVOCATION-anchored — preceded
+        // by `.`/`;`/`(`/`=` (schema-qualified / stacked / called) or `EXEC[UTE] [schema.]` —
+        // so an attack form matches but benign prose that merely NAMES the proc ("how to
+        // disable xp_cmdshell") does NOT false-positive. The de-obf channels feed it the
+        // decoded Base64Flat form too.
+        pattern: r"(?i)(?:[.;(=]\s*|\bexec(?:ute)?\s+(?:[\w$]+\.)*)(?:xp_cmdshell|xp_dirtree|xp_fileexist|xp_reg(?:read|write|deletekey|deletevalue|enumvalues)|sp_oacreate|sp_oamethod|sp_makewebtask|xp_servicecontrol|xp_availablemedia)\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
 ];
 
 // ── module ────────────────────────────────────────────────────────────────────

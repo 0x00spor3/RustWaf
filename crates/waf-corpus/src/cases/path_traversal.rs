@@ -177,16 +177,42 @@ pub static CASES: &[Case] = &[
                (pt-dotdot `{2,}` overlap declared)",
     },
     Case {
-        // UNC `\\::1\c$\…` URL/Plain is caught by pt-unc-path (the `:` host widening
-        // from B3). Its Base64Flat form is now caught at 10c: base64-decode → the UNC
-        // string → pt-unc-path. (10b-bis backslash broadening stays out of scope.)
+        // UNC `\\::1\c$\…` URL/Plain caught by pt-unc-path (`:` host widening, B3). Its
+        // Base64Flat form is caught at 10c via base64-decode → the UNC string. Since the
+        // share is the admin share `c$`, 10b-bis `pt-unc-admin-share` (Critical) now ALSO
+        // fires on the decoded string.
         id: "pt-gotestwaf-unc-base64-query",
         module: Module::PathTraversal,
-        field: Field::Query { name: "file", value: "XFw6OjFcYyQpdXNlcnNcZGVmYXVsdFxudHVzZXIuZGF0" },
-        min_pl: 3,
+        field: Field::Query { name: "file", value: "XFw6OjFcYyRcdXNlcnNcZGVmYXVsdFxudHVzZXIuZGF0" },
+        min_pl: 1,
         expect: Expect::Triggers,
-        rules: &["pt-unc-path"],
-        desc: "base64(UNC `\\\\::1\\c$\\…`) — caught at 10c via base64-decode → pt-unc-path",
+        rules: &["pt-unc-admin-share"],
+        desc: "base64(UNC `\\\\::1\\c$\\…`) — base64-decode → pt-unc-path + pt-unc-admin-share (10b-bis)",
+    },
+    // ── 10b-bis: UNC to an ADMINISTRATIVE share (`\\host\c$\…`) ───────────────────
+    // WIRE (pcap bypass-new.txt L7918): gotestwaf path-traversal `\\::1\c$\users\default\
+    // ntuser.dat`. Was sub-threshold (only pt-unc-path Notice=2); the admin-share (`$`)
+    // anchor (Critical) now blocks it. Path-placed (URL-encoded backslashes) form.
+    Case {
+        id: "pt-unc-admin-share-wire",
+        module: Module::PathTraversal,
+        field: Field::Path("/%5C%5C::1%5Cc$%5Cusers%5Cdefault%5Cntuser.dat"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["pt-unc-admin-share"],
+        desc: "WIRE: UNC admin-share `\\\\::1\\c$\\…ntuser.dat` in URL path — 10b-bis `$`-share anchor",
+    },
+    // Lock (probe-confirmed already CAUGHT, score 12 — the wire 200 was a stale binary):
+    // multipart field-NAME carrying `../../etc/passwd` stays blocked.
+    Case {
+        id: "pt-lfi-multipart-name-wire",
+        module: Module::PathTraversal,
+        field: Field::MultipartFile { field: "/static/img/../../etc/passwd", filename: None, content: "x" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["pt-dotdot-traversal"],
+        desc: "WIRE lock: `../../etc/passwd` in a multipart field NAME — pt-dotdot `{2,}` + \
+               pt-sensitive-unix already catch it (regression guard)",
     },
     Case {
         // Overlong UTF-8 of `../../etc/passwd` (`%C0%AE`=`.`, `%C0%AF`=`/`), CAUGHT at

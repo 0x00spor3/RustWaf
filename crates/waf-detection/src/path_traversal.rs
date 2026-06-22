@@ -62,6 +62,17 @@ pub static PATH_TRAVERSAL_RULES: &[Rule] = &[
         severity: Severity::Notice,
         paranoia: 3,
     },
+    Rule {
+        id: "pt-unc-admin-share",
+        // UNC path to an ADMINISTRATIVE share — `\\host\c$\`, `\\host\admin$\`, `\\host\ipc$\`.
+        // The `$`-suffixed share is the attack tell (remote SYSTEM-drive / IPC access, e.g.
+        // `\\::1\c$\users\default\ntuser.dat`); ordinary file shares (`\\srv\public\`) have
+        // no `$` and stay on the Notice-level `pt-unc-path`. Promotes ONLY the admin-share
+        // form to Critical, no FP on legitimate UNC references.
+        pattern: r"(?i)\\\\[a-z0-9_.:-]+\\[a-z]+\$\\",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
 ];
 
 // ── module ────────────────────────────────────────────────────────────────────

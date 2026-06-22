@@ -330,17 +330,79 @@ pub fn strip_midtoken_tags(s: &str) -> Option<String> {
     changed.then_some(out)
 }
 
+/// MID-TOKEN control-character strip (§6-D2b): drop a run of C0 control bytes injected
+/// INSIDE an identifier to break a keyword (`<<scr\0ipt>` → `<<script>`, the gotestwaf
+/// NUL-split mutation). Like [`strip_midtoken_tags`], it fires ONLY when the control run
+/// sits between word chars on BOTH sides — benign content never carries a NUL mid-word.
+/// `\t`/`\n`/`\r` are EXCLUDED: those are structural whitespace handled elsewhere, and
+/// collapsing intra-token WHITESPACE (`scr ipt`) is the high-FP D2b-2 variant, still
+/// deferred. Returns `Some` only when a control run was dropped. Linear single pass.
+pub fn strip_midtoken_controls(s: &str) -> Option<String> {
+    let is_ctrl = |c: u8| c < 0x20 && c != b'\t' && c != b'\n' && c != b'\r';
+    let b = s.as_bytes();
+    if !b.iter().any(|&c| is_ctrl(c)) {
+        return None;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < b.len() {
+        if is_ctrl(b[i]) {
+            let mut j = i;
+            while j < b.len() && is_ctrl(b[j]) {
+                j += 1;
+            }
+            let before = out.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let after = b.get(j).is_some_and(|&c| (c as char).is_alphanumeric() || c == b'_');
+            if before && after {
+                i = j; // drop the mid-token control run, keep the surrounding word chars
+                changed = true;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    changed.then_some(out)
+}
+
 /// All derived inspection variants of one inspected value (§6): base64-decoded (10c) +
-/// HTML-entity-decoded (evasion, §6-D1) + mid-token-tag-stripped (mutation, §6-D2). All
-/// are decode-then-match-then-discard. The entity variant is also fed through base64 (an
-/// entity-wrapped base64 blob). Single entry the normalizer calls per inspected value.
+/// HTML-entity-decoded (evasion, §6-D1) + mid-token-tag-stripped (mutation, §6-D2) +
+/// mid-token-control-stripped (§6-D2b). All are decode-then-match-then-discard. Single
+/// entry the normalizer calls per inspected value.
+///
+/// COMPOSITION (10c reopen): the evasion may live INSIDE a base64 blob (Base64Flat —
+/// gotestwaf wraps the whole mutation/entity payload in base64). The raw `value` is then
+/// the opaque base64 alphabet (no `&`/`<`/control byte), so the entity/tag/control
+/// transforms would no-op on it. Apply them over each base64-DECODED variant too, not
+/// just the raw input — otherwise `<<scr\0ipt>` / `o<x>nfocus` / `confirm&lpar;` survive
+/// the base64 unwrap un-reconstructed (pcap bypass-new.txt: D2a/D2b Base64Flat).
 pub fn derive_variants(value: &str) -> Vec<String> {
     let mut out = base64_derived(value);
+    // Compose the structural transforms over the base64-decoded variants.
+    let mut composed = Vec::new();
+    for d in &out {
+        if let Some(ent) = html_entity_decode_evasion(d) {
+            composed.push(ent);
+        }
+        if let Some(stripped) = strip_midtoken_tags(d) {
+            composed.push(stripped);
+        }
+        if let Some(stripped) = strip_midtoken_controls(d) {
+            composed.push(stripped);
+        }
+    }
+    out.extend(composed);
+    // Raw-surface transforms (URL/percent-decoded value, no base64 wrapper).
     if let Some(ent) = html_entity_decode_evasion(value) {
         out.extend(base64_derived(&ent));
         out.push(ent);
     }
     if let Some(stripped) = strip_midtoken_tags(value) {
+        out.push(stripped);
+    }
+    if let Some(stripped) = strip_midtoken_controls(value) {
         out.push(stripped);
     }
     out

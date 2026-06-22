@@ -25,11 +25,16 @@ use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 //     never reaches into `<!DOCTYPE x [ … SYSTEM … ]>` (that payload carries an
 //     `<!ENTITY` and is attributed there — one rule per payload).
 //
-// DOCUMENTED LIMITS (see cases/xxe.rs, ExpectedMiss{None}): external XML-Schema
-// inclusion (`xsi:schemaLocation` / `<xs:include>`) is regex-indistinguishable from
-// benign SOAP/XSD traffic without semantic XML parsing + outbound-URL reputation,
-// so flagging it would be a SOAP false-positive factory — deferred to keep the P2
-// benign-blocking floor at 0.
+// §6-D5 (external XML-Schema inclusion): a BLANKET `xsi:schemaLocation` / `<xs:include>`
+// rule is a SOAP false-positive factory (benign SOAP/XSD carries both constantly). The
+// two rules below instead key on the STRUCTURALLY-ANOMALOUS attack forms that benign XML
+// never uses, so the P2 benign-blocking floor stays 0 (FP-probed against real SOAP / XSD
+// imports / XHTML / noNamespaceSchemaLocation — all clean):
+//   - `<xs:include namespace=…>` — `xs:include` has NO `namespace` attribute per the XSD
+//     spec (that belongs to `xs:import`); a same-namespace include carrying one is malformed.
+//   - `xsi:schemaLocation="<single http(s) URL>"` — legit schemaLocation is ALWAYS a
+//     space-separated `namespace location` PAIR; a lone URL is the attack shape (the legit
+//     single-URL form is the distinct `xsi:noNamespaceSchemaLocation` attribute).
 
 pub static XXE_RULES: &[Rule] = &[
     Rule {
@@ -56,6 +61,27 @@ pub static XXE_RULES: &[Rule] = &[
         // (the real `<!DOCTYPE`/`<!ENTITY` markup is UTF-7-encoded to slip past
         // byte-level filters). No modern XML legitimately declares UTF-7.
         pattern: r#"(?i)encoding\s*=\s*["']?\+?utf-?7\b"#,
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    // ── §6-D5: external XML-Schema inclusion (anomalous-form-anchored, no SOAP FP) ──
+    Rule {
+        id: "xxe-xs-include-namespace",
+        // `<xs:include … namespace=…>` — malformed: `xs:include` is same-namespace, it
+        // takes only `schemaLocation`; a `namespace` attr means an attacker-style remote
+        // include (gotestwaf xml-injection). Legit `xs:import` (which DOES take namespace)
+        // is unaffected — the anchor is the element name `xs:include`.
+        pattern: r"(?i)<xs:include\b[^>]*\bnamespace\s*=",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "xxe-schemalocation-single-url",
+        // `xsi:schemaLocation="<single http(s) URL>"` — legit schemaLocation is a
+        // space-separated `namespace location` PAIR, so a lone URL (no whitespace before
+        // the closing quote) is the external-schema attack. `xsi:noNamespaceSchemaLocation`
+        // (the legit single-URL attribute) is a different name and does NOT match.
+        pattern: r#"(?i)\bxsi:schemalocation\s*=\s*["']\s*https?://[^"'\s]*\s*["']"#,
         severity: Severity::Critical,
         paranoia: 1,
     },

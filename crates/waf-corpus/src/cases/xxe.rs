@@ -86,8 +86,9 @@ pub static CASES: &[Case] = &[
         rules: &["xxe-utf7-encoding"],
         desc: "verbatim gotestwaf community-xxe: the real <!DOCTYPE/<!ENTITY are UTF-7-encoded (+ADwAIQ-…); xxe-utf7-encoding catches the charset (also rfi-remote-url via the http:// tail, declared)",
     },
-    // ── malicious: external-schema XXE — native xxe-module detection is deferred
-    //     (FP-prohibitive, see below) but the external URL trips rfi-remote-url ────
+    // ── §6-D5: external-schema XXE — now CAUGHT natively via anomalous-form anchors ──
+    // (was deferred as FP-prohibitive; the structural anchors below are FP-probed clean
+    // against real SOAP / xs:import / XHTML / noNamespaceSchemaLocation — see benign guards.)
     Case {
         id: "xxe-xsi-schemalocation-query",
         module: Module::Xxe,
@@ -95,10 +96,11 @@ pub static CASES: &[Case] = &[
             name: "data",
             value: r#"<?xml version="1.0" encoding="utf-8" standalone="no" ?><x xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://xxe-xsi-schemalocation.yourdomain[.]com/"/>"#,
         },
-        min_pl: 3,
+        min_pl: 1,
         expect: Expect::Triggers,
-        rules: &["rfi-remote-url"],
-        desc: "external xsi:schemaLocation XXE — native schema detection deferred (indistinguishable from benign SOAP without semantic parsing); the external URL is caught by rfi-remote-url (Notice, defense-in-depth)",
+        rules: &["xxe-schemalocation-single-url"],
+        desc: "external xsi:schemaLocation XXE (single URL, not a namespace/location pair) — \
+               §6-D5; legit SOAP pairs + noNamespaceSchemaLocation stay clean (benign guards)",
     },
     Case {
         id: "xxe-xs-include-query",
@@ -107,10 +109,11 @@ pub static CASES: &[Case] = &[
             name: "data",
             value: r#"<?xml version="1.0" encoding="utf-8" standalone="no" ?><xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:include namespace="http://xxe-xsinclude-namespace.yourdomain[.]com/"/></xs:schema>"#,
         },
-        min_pl: 3,
+        min_pl: 1,
         expect: Expect::Triggers,
-        rules: &["rfi-remote-url"],
-        desc: "external <xs:include> schema XXE — native schema detection deferred (indistinguishable from benign XSD); the external URL is caught by rfi-remote-url (Notice, defense-in-depth)",
+        rules: &["xxe-xs-include-namespace"],
+        desc: "external <xs:include namespace=…> XXE — malformed (include takes no namespace attr) \
+               → §6-D5; legit xs:import (which DOES take namespace) stays clean (benign guard)",
     },
     // ── URLPath coverage (10c REOPEN, pcap): scheme-less SYSTEM id isolates xxe ───
     Case {
@@ -155,6 +158,47 @@ pub static CASES: &[Case] = &[
         expect: Expect::Clean,
         rules: &[],
         desc: "ordinary UTF-8 XML document — must NOT match xxe-utf7-encoding (8 != 7) or any markup-declaration rule",
+    },
+    // ── §6-D5 benign guards: legit SOAP/XSD schema refs must stay clean. NB: kept
+    // http-FREE on purpose — a real http URL in a query value trips the unrelated
+    // rfi-remote-url (Notice), which the strict benign oracle counts as a match. The
+    // http-bearing variants (SOAP http-pair, http noNamespaceSchemaLocation) were
+    // FP-probed separately and are clean; these lock the STRUCTURAL discrimination.
+    Case {
+        id: "xxe-benign-xs-import-namespace",
+        module: Module::Xxe,
+        field: Field::Query {
+            name: "data",
+            value: r#"<xs:schema><xs:import namespace="urn:example:ns" schemaLocation="common.xsd"/></xs:schema>"#,
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "legit `xs:import` DOES carry a `namespace=` attr — the D5 rule anchors on `xs:include` (which must not), so import stays clean (D5 FP guard)",
+    },
+    Case {
+        id: "xxe-benign-schemalocation-pair",
+        module: Module::Xxe,
+        field: Field::Query {
+            name: "data",
+            value: r#"<x xmlns:xsi="urn:w3:xsi" xsi:schemaLocation="urn:example:ns common.xsd"/>"#,
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "legit `xsi:schemaLocation` = namespace+location PAIR (not a lone URL) — must NOT match the single-URL anchor (D5 FP guard)",
+    },
+    Case {
+        id: "xxe-benign-nonamespace-schemalocation",
+        module: Module::Xxe,
+        field: Field::Query {
+            name: "data",
+            value: r#"<root xsi:noNamespaceSchemaLocation="common.xsd"><a/></root>"#,
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "the legit single-URL schema attr is `noNamespaceSchemaLocation` — distinct name, must NOT match the `xsi:schemaLocation` anchor (D5 FP guard)",
     },
     Case {
         id: "xxe-benign-entity-prose",

@@ -236,6 +236,116 @@ pub fn base64_derived(value: &str) -> Vec<String> {
     out
 }
 
+/// Named HTML entities decoded by the EVASION decoder (§6-D1). DELIBERATELY excludes the
+/// structural/escaping entities `lt`/`gt`/`amp`/`quot`/`apos` — decoding those would
+/// reconstruct `<script>` / `"` from benign HTML-escaped content (forums, code samples,
+/// JSON-carrying-HTML) and FALSE-POSITIVE. The ones here resolve obfuscation that benign
+/// callers never use (`confirm&lpar;1&rpar;`, `&equals;`).
+const ENTITY_NAMED: &[(&str, char)] = &[
+    ("lpar", '('), ("rpar", ')'), ("equals", '='), ("colon", ':'), ("sol", '/'),
+    ("bsol", '\\'), ("period", '.'), ("comma", ','), ("excl", '!'), ("semi", ';'),
+    ("quest", '?'), ("commat", '@'), ("dollar", '$'), ("percnt", '%'), ("plus", '+'),
+    ("ast", '*'), ("midast", '*'), ("lbrace", '{'), ("rbrace", '}'), ("lcub", '{'),
+    ("rcub", '}'), ("lsqb", '['), ("rsqb", ']'), ("grave", '`'), ("lowbar", '_'),
+    ("verbar", '|'), ("vert", '|'), ("num", '#'), ("Tab", '\t'), ("NewLine", '\n'),
+];
+
+/// HTML-entity decode for EVASION only (§6-D1): named (table above) + numeric
+/// (`&#NN;` / `&#xHH;`), but NEVER the 5 structural chars `< > & " '`. Returns `Some`
+/// only when at least one entity was decoded (else the value is unchanged → no point
+/// adding it to the derived channel). decode-then-match-then-discard: this output is an
+/// inspection-only variant, the stored value is untouched. Linear single pass.
+pub fn html_entity_decode_evasion(s: &str) -> Option<String> {
+    if !s.contains('&') {
+        return None;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        // entity body is up to the next ';' within a small window (cap 31 chars)
+        let decoded = after.find(';').filter(|&p| p <= 31).and_then(|semi| {
+            let ent = &after[..semi];
+            let c = if let Some(num) = ent.strip_prefix('#') {
+                let cp = match num.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => num.parse::<u32>().ok(),
+                };
+                cp.and_then(char::from_u32)
+            } else {
+                ENTITY_NAMED.iter().find(|(n, _)| *n == ent).map(|(_, c)| *c)
+            };
+            c.filter(|c| !matches!(c, '<' | '>' | '&' | '"' | '\''))
+                .map(|c| (c, semi))
+        });
+        match decoded {
+            Some((c, semi)) => {
+                out.push(c);
+                changed = true;
+                rest = &after[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
+/// MID-TOKEN tag-strip (§6-D2): drop a `<…>` tag ONLY when immediately surrounded by word
+/// chars on BOTH sides (`\w<…>\w`) — i.e. injected INSIDE an identifier to break a token
+/// (`o<x>nfocus` → `onfocus`, `autof<x>ocus` → `autofocus`), the gotestwaf mutation-XSS
+/// evasion. WRAPPING tags (`<code>onerror</code>`, HTML tables/`<b>`/`<a href>`) are left
+/// INTACT, so benign HTML-bearing content gains NO spurious `onerror=` adjacency
+/// (probe-measured: zero new FP). Returns `Some` only when a tag was dropped. The tag span
+/// is capped at 24 chars (a real mutation tag is tiny — `<x>`, `<y>`).
+pub fn strip_midtoken_tags(s: &str) -> Option<String> {
+    if !s.contains('<') {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'<' {
+            if let Some(close) = s[i..].find('>').map(|p| i + p) {
+                let before = out.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                let after = b.get(close + 1).is_some_and(|&c| (c as char).is_alphanumeric() || c == b'_');
+                if before && after && (close - i) <= 24 {
+                    i = close + 1; // drop the mid-token tag, keep the surrounding word chars
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    changed.then_some(out)
+}
+
+/// All derived inspection variants of one inspected value (§6): base64-decoded (10c) +
+/// HTML-entity-decoded (evasion, §6-D1) + mid-token-tag-stripped (mutation, §6-D2). All
+/// are decode-then-match-then-discard. The entity variant is also fed through base64 (an
+/// entity-wrapped base64 blob). Single entry the normalizer calls per inspected value.
+pub fn derive_variants(value: &str) -> Vec<String> {
+    let mut out = base64_derived(value);
+    if let Some(ent) = html_entity_decode_evasion(value) {
+        out.extend(base64_derived(&ent));
+        out.push(ent);
+    }
+    if let Some(stripped) = strip_midtoken_tags(value) {
+        out.push(stripped);
+    }
+    out
+}
+
 /// Derived inspection variants of a single JSON STRING leaf (Fase 10c).
 ///
 /// `serde_json::from_str` already unescapes JSON `\uXXXX`/`\n`/… so `raw` is the
@@ -257,6 +367,10 @@ pub fn json_leaf_derived(raw: &str) -> Vec<String> {
     let (bytes, _) = percent_overlong_fixpoint(raw.as_bytes(), false, &mut budget);
     let canonical: String = String::from_utf8_lossy(&bytes).nfkc().collect();
     expand_base64(&canonical, &mut budget, &mut out);
+    // §6-D1: a JSON leaf may carry HTML entities too (`{"q":"confirm&lpar;1&rpar;"}`).
+    if let Some(ent) = html_entity_decode_evasion(&canonical) {
+        out.push(ent);
+    }
     if canonical != raw {
         out.push(canonical);
     }
@@ -372,7 +486,7 @@ pub fn parse_query(
         }
         // Base64-derived from the canonical VALUE only (param names aren't attacker
         // payload carriers; keys stay out, like multipart field names).
-        derived.extend(base64_derived(&dv));
+        derived.extend(derive_variants(&dv));
         params.push((dk, dv));
     }
 

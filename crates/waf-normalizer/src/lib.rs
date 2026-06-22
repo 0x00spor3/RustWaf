@@ -127,7 +127,7 @@ impl Normalizer {
         // (too short / non-alphabet) → no cost, no FP.
         for raw_seg in ctx.raw_path.split('/').filter(|s| !s.is_empty()) {
             let (seg, _) = url::percent_decode(raw_seg, false);
-            derived.extend(url::base64_derived(&seg));
+            derived.extend(url::derive_variants(&seg));
         }
 
         // ── 6. Parse query params (+ base64-derived) ──────────────────────────
@@ -161,7 +161,7 @@ impl Normalizer {
             }
             other => {
                 for s in body_canonical_strings(other) {
-                    derived.extend(url::base64_derived(&s));
+                    derived.extend(url::derive_variants(&s));
                 }
             }
         }
@@ -172,7 +172,7 @@ impl Normalizer {
         // base64 channel reads them (the candidate is canonicalized inside base64_derived).
         for (name, value) in &norm_headers {
             if !header_base64_excluded(name) {
-                derived.extend(url::base64_derived(value));
+                derived.extend(url::derive_variants(value));
             }
         }
 

@@ -152,24 +152,82 @@ pub static CASES: &[Case] = &[
                (single percent-decode would catch it; serde unescape alone is not enough)",
     },
     // ── documented limits (need §6 HTML normalization — out of 10b rules-only) ───
-    Case {
-        id: "xss-mutation-tag-break",
-        module: Module::Xss,
-        field: Field::Query { name: "q", value: "autof<x>ocus o<x>nfocus=alert<x>(1)//" },
-        min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: None },
-        rules: &[],
-        desc: "mutation XSS: <x> inserted to break onfocus/alert tokens — needs §6 HTML tag-stripping",
-    },
+    // ── §6-D1: HTML-entity (evasion) decoding — now CAUGHT via the derived channel ──
     Case {
         id: "xss-entity-obfuscated-scheme",
         module: Module::Xss,
         field: Field::Query { name: "q", value: "<a href=javas&#99;ript:prompt&#x28;document.domain)>xss" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: None },
-        rules: &[],
-        desc: "HTML-entity-obfuscated javascript:/prompt( — needs §6 HTML-entity decoding",
+        expect: Expect::Triggers,
+        // `&#99;`→`c`, `&#x28;`→`(` (evasion entities; structural `<`/`>` left alone) →
+        // `javascript:prompt(` → xss-javascript-proto. Closed by §6-D1 entity-decode.
+        rules: &["xss-javascript-proto"],
+        desc: "HTML-entity-obfuscated javascript:/prompt( — closed by §6-D1 evasion entity-decode",
     },
+    Case {
+        id: "xss-entity-lpar-handler",
+        module: Module::Xss,
+        field: Field::Header { name: "x-ref", value: "&gt;+src+onerror=confirm&lpar;1&rpar;&lt;" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // `&lpar;`→`(` → `confirm(1)`; the literal `onerror=` also fires. §6-D1 (header surface).
+        rules: &["xss-js-sink-call"],
+        desc: "named-entity `&lpar;`/`&rpar;` obfuscation of confirm() — §6-D1 entity-decode",
+    },
+    // ── benign guards for §6-D1: escaped HTML must stay clean (structural chars kept) ─
+    Case {
+        id: "xss-benign-escaped-html-tag",
+        module: Module::Xss,
+        field: Field::Query { name: "q", value: "use &lt;b&gt;bold&lt;/b&gt; and &amp;amp; to escape" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "benign HTML-escaped prose — `&lt;`/`&gt;`/`&amp;` are NOT decoded (no tag reconstruction)",
+    },
+    Case {
+        id: "xss-benign-numeric-escaped-tag",
+        module: Module::Xss,
+        field: Field::Query { name: "q", value: "&#60;div class=note&#62;hello&#60;/div&#62;" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "numeric `&#60;`/`&#62;` (= `<`/`>`) are EXCLUDED from evasion decode — no FP on escaped code",
+    },
+    // ── §6-D2: mid-token tag-strip — mutation XSS now CAUGHT via the derived channel ─
+    Case {
+        id: "xss-mutation-tag-break",
+        module: Module::Xss,
+        field: Field::Query { name: "q", value: "autof<x>ocus o<x>nfocus=alert<x>(1)//" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // `o<x>nfocus` → `onfocus` (mid-token `<x>` dropped) → `onfocus=` → xss-event-handler.
+        // `alert<x>(` keeps its tag (`t`<x>`(` is not word-word) but the handler is enough.
+        rules: &["xss-event-handler"],
+        desc: "mutation XSS: <x> inside onfocus token — closed by §6-D2 mid-token tag-strip",
+    },
+    // ── benign guards for §6-D2: WRAPPING tags must NOT create a spurious handler match ─
+    Case {
+        id: "xss-benign-wrapped-handler-word",
+        module: Module::Xss,
+        field: Field::Header { name: "x-doc", value: "the <code>onerror</code> = handler attribute" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "docs: a handler WORD wrapped in <code> + a separate `=` must NOT match (mid-token-only strip)",
+    },
+    Case {
+        id: "xss-benign-html-table-cells",
+        module: Module::Xss,
+        field: Field::Header { name: "x-tbl", value: "<tr><td>onclick</td><td>=</td><td>fn</td></tr>" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "HTML table cells separating onclick/=/fn must NOT be joined into `onclick=` (D2 FP guard)",
+    },
+    // NB: §6-D2b (intra-token whitespace, e.g. `<<scr ipt>`) stays DEFERRED — space-collapse
+    // on keywords is high-FP-risk on prose. No corpus case here: the gotestwaf example also
+    // carries `http://xss.com`, which trips rfi-remote-url (sub-threshold) and confounds a
+    // clean "miss" demonstration.
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "xss-benign-javascript-prose",

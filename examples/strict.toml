@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# strict.toml — HIGH-SECURITY / HIGH-VALUE TARGET (highest aggressiveness)
+#
+# Use case: an admin panel, a banking/health backend, anything where you accept a
+# higher false-positive risk in exchange for catching weaker / accumulated
+# signals. PL4 activates EVERY shipped rule (incl. the noisier Notice-tier ones)
+# and the threshold is lowered to 4, so a single Error-tier rule blocks and two
+# Notice signals (2+2) reach the bar.
+#
+# ⚠️  FALSE-POSITIVE WARNING: threshold 3 + PL4 blocks on accumulated weak signals.
+#     ALWAYS validate against detection-only.toml on YOUR traffic first; expect to
+#     allow-list a few legitimate patterns. Do not deploy strict blind.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+[waf]
+mode            = "blocking"
+block_threshold = 3          # lower bar -> Error(4) alone blocks; two Notices (2+2) block
+paranoia_level  = 4          # activate ALL rules, including the noisy ones
+
+[resilience]
+on_upstream_error = "fail_closed"    # never expose the origin unprotected
+on_internal_error = "fail_closed"    # strict posture: a module failure => deny, not skip
+on_config_error   = "fail_closed"    # refuse to serve on an invalid config rather than risk drift
+on_parser_limit   = "fail_closed"    # malformed/over-limit input -> 400
+upstream_timeout_ms = 15000          # tighter upstream deadline
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+[rate_limit]
+enabled        = true
+key            = "client_ip"
+requests       = 30          # aggressive: 30 req / 30 s per IP
+window_seconds = 30
+burst          = 30
+action         = "block"     # exceed -> 429
+score          = 5
+max_tracked_keys = 200000
+
+[network]
+trusted_proxies  = []
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[limits]
+max_body_size   = 262144     # 256 KiB — tighter; reject oversized bodies early
+max_header_size = 4096
+max_headers     = 64
+max_params      = 64
+max_cookies     = 30
+max_json_depth  = 12
+
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }
+ldap              = { enabled = true }
+nosql             = { enabled = true }
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# api-json.toml — JSON / REST API BACKEND
+#
+# Use case: a service that mostly receives `application/json` (and form/multipart)
+# bodies. The WAF flattens JSON and inspects every string leaf (plus the derived
+# decode channel), so injection payloads hidden in JSON values are caught. This
+# config tunes the DEFENSIVE LIMITS for API-shaped traffic (larger bodies, deeper
+# nesting, more fields) while keeping all detections on as defense-in-depth.
+#
+# NB: a JSON transport for GraphQL is inspected the same way (the query string is
+# a JSON leaf). gRPC is NOT supported (it needs HTTP/2; this proxy is HTTP/1.1).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+[waf]
+mode            = "blocking"
+block_threshold = 5
+paranoia_level  = 3          # APIs rarely carry markup -> PL3 buys recall at low FP cost here
+
+[resilience]
+on_upstream_error = "fail_closed"
+on_internal_error = "fail_open"
+on_config_error   = "fail_open"
+on_parser_limit   = "fail_closed"    # reject malformed / over-limit JSON with 400
+upstream_timeout_ms = 30000
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+[rate_limit]
+enabled        = true
+key            = "client_ip"
+requests       = 300         # APIs are chattier than page loads
+window_seconds = 60
+burst          = 300
+action         = "block"
+score          = 5
+max_tracked_keys = 100000
+
+[network]
+# If the API sits behind a gateway/LB, fill these like behind-cdn.toml.
+trusted_proxies  = []
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[limits]
+max_body_size   = 5242880    # 5 MiB — API JSON payloads are bigger than form posts
+max_header_size = 16384      # 16 KiB — bearer tokens / large Authorization headers
+max_headers     = 100
+max_params      = 256        # more query/body fields
+max_cookies     = 50
+max_json_depth  = 32         # deeper nesting for structured API documents
+
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }   # still useful: stored-XSS via API -> reflected elsewhere
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }   # APIs that fetch URLs are prime SSRF targets
+ldap              = { enabled = true }
+nosql             = { enabled = true }   # JSON APIs often sit on document/NoSQL stores
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }   # keep on if any endpoint accepts XML
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

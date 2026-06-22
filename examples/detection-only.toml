@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# detection-only.toml — SHADOW / OBSERVE mode (lowest aggressiveness)
+#
+# Use case: first deployment, or tuning before you start blocking. The WAF runs
+# the full pipeline and LOGS every decision, but never returns 403/429 — nothing
+# is blocked. Run this for a few days, read the JSON logs (and the `report`
+# example), confirm zero false positives on YOUR traffic, then graduate to
+# balanced.toml / strict.toml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+[waf]
+mode            = "detection-only"   # log only, never block
+block_threshold = 5                  # the score that WOULD block (logged, not enforced)
+paranoia_level  = 1                  # start quiet (PL1 = high-confidence rules only)
+
+[resilience]
+on_upstream_error = "fail_open"      # origin down -> 503 retryable (do not add friction while observing)
+on_internal_error = "fail_open"      # a WAF bug must not affect the site
+on_config_error   = "fail_open"      # keep last-good config on a bad reload
+on_parser_limit   = "fail_open"      # while observing, forward uninspected (logged loudly) instead of 400
+upstream_timeout_ms = 30000
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+[rate_limit]
+enabled        = true
+key            = "client_ip"
+requests       = 1000                # generous: in observe mode you don't want to throttle
+window_seconds = 60
+burst          = 1000
+action         = "score"             # contribute to the (logged) score instead of 429
+score          = 5
+max_tracked_keys = 100000
+
+[network]
+trusted_proxies  = []                # empty -> XFF ignored, peer addr used (safe default)
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[limits]
+max_body_size   = 1048576            # 1 MiB
+max_header_size = 8192
+max_headers     = 100
+max_params      = 100
+max_cookies     = 50
+max_json_depth  = 20
+
+# All detections ON — observe the full surface before deciding what to enforce.
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }
+ldap              = { enabled = true }
+nosql             = { enabled = true }
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

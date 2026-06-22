@@ -1,0 +1,78 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# behind-cdn.toml — PRODUCTION BEHIND A TRUSTED PROXY / CDN / LOAD BALANCER
+#
+# Use case: the WAF sits behind Cloudflare / an ALB / nginx. The TCP peer is the
+# proxy, NOT the client — so without `trusted_proxies` the rate limiter would
+# throttle the proxy's IP collectively, and logs would show the wrong IP. This
+# config enables SAFE client-IP resolution from X-Forwarded-For.
+#
+# SECURITY MODEL (fail-safe): XFF is trusted ONLY when the peer is inside
+# `trusted_proxies`. `trusted_hops` counts from the RIGHT (the proxy-appended,
+# trustworthy end), never the left (client-spoofable). With an empty
+# `trusted_proxies` the header is ALWAYS ignored. ⚠️ Set the CIDRs below to YOUR
+# proxy's real egress ranges — too broad a range lets a client spoof its IP.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+[waf]
+mode            = "blocking"
+block_threshold = 5
+paranoia_level  = 2
+
+[resilience]
+on_upstream_error = "fail_closed"
+on_internal_error = "fail_open"
+on_config_error   = "fail_open"
+on_parser_limit   = "fail_closed"
+upstream_timeout_ms = 30000
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+[rate_limit]
+enabled        = true
+key            = "client_ip"   # now meaningful: it's the RESOLVED client IP, not the CDN's
+requests       = 100
+window_seconds = 60
+burst          = 100
+action         = "block"
+score          = 5
+max_tracked_keys = 100000
+
+[network]
+# CIDRs of YOUR proxies/LB/CDN egress. Examples below are placeholders — replace
+# them. Cloudflare publishes its ranges; an internal ALB is usually a VPC subnet.
+trusted_proxies  = ["10.0.0.0/8", "172.16.0.0/12", "::1"]
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1            # one proxy hop in front -> trust exactly 1 from the right
+
+[limits]
+max_body_size   = 1048576
+max_header_size = 8192
+max_headers     = 100
+max_params      = 100
+max_cookies     = 50
+max_json_depth  = 20
+
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }
+ldap              = { enabled = true }
+nosql             = { enabled = true }
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

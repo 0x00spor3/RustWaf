@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# balanced.toml — RECOMMENDED PRODUCTION BASELINE
+#
+# Use case: a normal web app, directly exposed (no trusted proxy in front).
+# Blocking is ON, paranoia is PL2 (high-confidence + a few accumulation rules),
+# threshold is the C2 default (5) so a single Critical (6) blocks on its own merit
+# while weak signals only accumulate. This is the sane default — start here once
+# detection-only has confirmed your traffic is clean.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+[waf]
+mode            = "blocking"
+block_threshold = 5
+paranoia_level  = 2          # 1..=4 — PL2 adds Warning-tier rules over PL1
+
+[resilience]
+on_upstream_error = "fail_closed"    # origin down/timeout -> 502 (don't expose an unprotected origin)
+on_internal_error = "fail_open"      # a WAF bug must NOT take down the site (additive control)
+on_config_error   = "fail_open"      # bad hot-reload -> keep last-good config
+on_parser_limit   = "fail_closed"    # normalization failed (limits/malformed) -> 400
+upstream_timeout_ms = 30000
+
+[waf.severity_scores]
+critical = 6                 # one high-confidence rule blocks (6 >= 5)
+error    = 4
+warning  = 3                 # two weak signals (3+3) accumulate to a block
+notice   = 2
+
+[rate_limit]
+enabled        = true
+key            = "client_ip"
+requests       = 100         # 100 req / 60 s per IP
+window_seconds = 60
+burst          = 100
+action         = "block"     # exceed -> 429 with Retry-After
+score          = 5
+max_tracked_keys = 100000
+
+[network]
+trusted_proxies  = []        # directly exposed -> ignore XFF, use the real peer addr
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[limits]
+max_body_size   = 1048576    # 1 MiB
+max_header_size = 8192
+max_headers     = 100
+max_params      = 100
+max_cookies     = 50
+max_json_depth  = 20
+
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }
+ldap              = { enabled = true }
+nosql             = { enabled = true }
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

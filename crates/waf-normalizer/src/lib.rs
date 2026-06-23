@@ -1,5 +1,6 @@
 pub mod body;
 pub mod graphql;
+pub mod grpc;
 pub mod url;
 
 use waf_core::{LimitsConfig, RequestContext};
@@ -171,7 +172,29 @@ impl Normalizer {
             // (when equal, `body_str_values` already inspects it; the guard also skips the
             // clone for un-encoded / binary bodies).
             waf_core::ParsedBody::Raw(b) => {
-                if let Ok(raw) = std::str::from_utf8(b) {
+                // gRPC (`application/grpc*`): the framed protobuf body is BINARY, so the
+                // canonical path below (`from_utf8`) extracts nothing. De-frame it and feed
+                // the length-delimited protobuf FIELDS (leaf strings) to the derived channel,
+                // so the content modules inspect a SQLi/XSS smuggled inside a field. This is
+                // the §6 CONTENT surface (always-on, like JSON-leaf decode) — the structural
+                // size/field/depth caps are the separate `grpc` module's job (accounting kept
+                // apart). A compressed/malformed body yields no leaves (the module's policy
+                // decides on those). Caps are generous defaults purely to bound the work.
+                let is_grpc = content_type
+                    .map(|ct| ct.trim_start().starts_with("application/grpc"))
+                    .unwrap_or(false);
+                if is_grpc {
+                    let ex = crate::grpc::grpc_extract(b, crate::grpc::GrpcLimits::default());
+                    for leaf in ex.leaves {
+                        let canonical = url::canonicalize_value(&leaf, false).0;
+                        derived.extend(url::derive_variants(&canonical));
+                        // ALWAYS push the canonical leaf: unlike a UTF-8 raw body (which
+                        // `body_str_values` inspects directly), the BINARY gRPC body is
+                        // invisible to `body_str_values`, so the leaf only reaches the
+                        // modules through this derived channel.
+                        derived.push(canonical);
+                    }
+                } else if let Ok(raw) = std::str::from_utf8(b) {
                     let canonical = url::canonicalize_value(raw, false).0;
                     derived.extend(url::derive_variants(&canonical));
                     if canonical != raw {

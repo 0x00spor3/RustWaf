@@ -93,10 +93,17 @@ inspected field; the **structural** GraphQL protections run as a structural modu
 (see below), outside the content prefilter.
 > **GraphQL — IMPLEMENTED (Phase 11), `OPEN`.** The core ships the **structural caps** — query
 > depth (paren-aware), alias/field/directive counts, batch size, and an introspection policy —
-> as a `structural()` `Phase::Body` module (`[modules.graphql]`, default off). gRPC is **not yet
-> implemented** (Phase 12; needs HTTP/2, absent today) but stays `OPEN` by the same reasoning.
-> *Associated enterprise value:* premium GraphQL signatures (curated depth/complexity abuse),
-> **managed schema-enforcement** (validating queries against the app's real schema = schema
+> as a `structural()` `Phase::Body` module (`[modules.graphql]`, default off).
+>
+> **gRPC — IMPLEMENTED (gRPC phase, over Phase-12 HTTP/2), `OPEN`.** The core de-frames the gRPC
+> body and extracts the protobuf fields into the §6 derived channel (so a SQLi/XSS in a field is
+> caught by the content modules), plus a `structural()` `grpc` module with message-size / field-count
+> / nesting-depth caps and a compressed-payload policy (`[modules.grpc]`, default off). Content
+> extraction is best-effort (schema-less wire format); the structural caps are the guaranteed signal.
+> Forwarding is h2c end-to-end with trailer relay (unary; streaming + h2-over-TLS backend deferred).
+>
+> *Associated enterprise value* (for both): premium GraphQL/gRPC signatures (curated depth/complexity
+> abuse), **managed schema-enforcement** (validating against the app's real schema/`.proto` = schema
 > management/governance), dashboard drill-down → §2.
 
 ### 3.2 HTTPS / TLS → `SPLIT`

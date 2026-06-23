@@ -1,4 +1,5 @@
 pub mod graphql;
+pub mod grpc;
 pub mod header_injection;
 pub mod ldap;
 pub mod lfi_rfi;
@@ -242,7 +243,18 @@ pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {
             out
         }
         ParsedBody::Raw(bytes) => {
-            std::str::from_utf8(bytes).ok().map(str::to_owned).into_iter().collect()
+            // A Raw body is scanned as text ONLY when it IS text. A NUL byte marks a BINARY
+            // body — e.g. a gRPC framed protobuf message (the flag/length header bytes are
+            // NUL) — whose real content is extracted structurally into the derived channel,
+            // not scanned as a raw string. Scanning the framing bytes would false-positive
+            // (the frame header trips `pt-null-byte`; the `0x0a` field tag trips
+            // `hdr-crlf-in-body`). Non-gRPC binary bodies are likewise covered by the
+            // derived channel (`canonicalize_value` + `derive_variants`), so this loses no
+            // coverage.
+            match std::str::from_utf8(bytes) {
+                Ok(s) if !bytes.contains(&0) => vec![s.to_owned()],
+                _ => vec![],
+            }
         }
         ParsedBody::None => vec![],
     }

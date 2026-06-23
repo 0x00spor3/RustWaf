@@ -405,6 +405,7 @@ equivalence is **tested** on the corpus (the oracle), not assumed.
 | Request smuggling | connection  | P1 ✅ |
 | Rate limiting L7  | connection  | P1 ✅ |
 | GraphQL (structural)| body      | Phase 11 ✅ |
+| gRPC (structural) | body      | gRPC phase ✅ |
 | Geo / IP reputation| connection | P2 |
 | Bot detection     | headers     | P2 |
 
@@ -563,6 +564,34 @@ share the §7 scoring scheme (severities from `[waf.severity_scores]`, filtered 
 > - **Open/enterprise boundary** (`BOUNDARY.md` §3.1): the **structural caps** are core (OPEN);
 >   **schema-enforcement** (validating the query against the app's real schema → schema management
 >   = governance) stays **enterprise**.
+
+> gRPC notes (**structural** module + §6 content channel — gRPC phase; needs the HTTP/2 of Phase 12):
+> - **Two responsibilities, SEPARATE accounting** (the §6-fix lesson):
+>   - **CONTENT (§6, always-on)**: the `application/grpc*` body is binary → the normalizer de-frames it
+>     and extracts the protobuf fields (length-delimited leaves) into `derived_decoded`, so the content
+>     modules (SQLi/XSS/…) inspect an injection hidden in a field. A SQLi-in-field catch is credited to
+>     **§6 / the content module**, NOT to gRPC.
+>   - **STRUCTURAL (`grpc` module)**: DoS caps on the SHAPE (message size / field count / nesting depth)
+>     + a compressed policy → `Reject{400}`. Default OFF (`[modules.grpc]`).
+> - **Parser** `grpc_extract` (9th hand-rolled parser, fuzzed §13): framing `[flag][len:4 BE][msg]` +
+>   schema-less protobuf wire-format. Length-delimited heuristic: **valid UTF-8 → leaf string**, else
+>   **recurse as a sub-message** (depth-capped). Content inspection is **declared best-effort** (the
+>   wire format is ambiguous without the `.proto`: string|bytes|sub-message are indistinguishable) — the
+>   guaranteed deliverable is the **structural** signal. NB: a UTF-8 sub-message stays ONE leaf, but the
+>   nested text is still a substring of it → a content rule still matches.
+> - **Compressed** (`on_compressed`): `grpc-encoding` ≠ `identity` or the per-message flag = opaque
+>   payload → `Reject` (fail-closed, default) or `Passthrough` (on record). `identity`/absent = inspected.
+> - **`structural()=true`** (like GraphQL): runs on the fast-path skip too (a gRPC DoS with no content
+>   signature must not bypass).
+> - **Datapath (gRPC phase, over Phase-12 HTTP/2)**: **h2c end-to-end** forwarding via a `http2_only`
+>   client **dedicated** to gRPC targets (the general client stays h1 — no global flag) + **trailer
+>   relay** (`grpc-status`/`grpc-message`) both ways. The model stays **buffer-then-inspect**
+>   (`collect_with_trailers` keeps body AND trailers; `FramedBody` re-emits a data frame + a trailers
+>   frame) → unary covered; **streaming deferred** (it would rewrite the body-path). `te: trailers` is
+>   re-added on the gRPC forward (gRPC servers require it). An **h2-over-TLS** backend (`https://`) is
+>   deferred.
+> - **Open/enterprise boundary** (`BOUNDARY.md` §3.1): gRPC inspection = **core/OPEN** (datapath, like
+>   JSON/multipart); premium signatures / schema-enforcement = enterprise.
 
 ---
 
@@ -1167,6 +1196,25 @@ the equivalence oracle for the fast-path (Pillar 3).
     `waf-proxy/tests/tls.rs` (4 protocols + 2 fail-safes + **bite SQLi-over-h2-TLS→403** + seam units) +
     3 `[tls]` validation tests in waf-core. **gRPC = next phase** (de-framing + protobuf + h2 backend).
 
+- **gRPC phase ✅** — **gRPC inspection** (`OPEN`, over the Phase-12 HTTP/2). See §8 "gRPC notes". **Two
+  user guardrails**: (A) the nesting trap in the corpus BEFORE the parser; (B) separate accounting
+  (content→§6, structural→grpc module). **Probe-first (Step 0)**: the foundation invariant was the
+  **buffer-vs-trailer** tension — a throwaway proved `Collected` keeps body AND trailers and that a
+  `FramedBody` (data+trailers) re-emits them on unary without going back to streaming, + a dedicated h2
+  client. Pieces:
+  - **Parser `grpc_extract`** (9th hand-rolled, fuzzed): framing + protobuf wire-format; content
+    **best-effort**, structural guaranteed (§8).
+  - **Structural `grpc` module** (`structural()=true`): size/field/depth/compressed/malformed → `Reject`;
+    `[modules.grpc]` default OFF; `on_compressed: reject|passthrough`. **Normalizer hook**: protobuf
+    leaves → `derived_decoded` → content modules (§6). **Bug caught**: for a binary body
+    `body_str_values` cannot see the leaf → push it to derived ALWAYS.
+  - **Datapath**: `forward_to_backend` → **dedicated** h2c client (`http2_only`, not a global flag) +
+    trailer relay (`collect_with_trailers`/`FramedBody`) + `te: trailers`; non-gRPC = the unchanged h1 path.
+  - Re-gate: **validation 10/10** (4 corpus cases: SQLi-in-field→sqli [paletto B], benign-field,
+    **benign nesting→Clean** [paletto A], depth-bomb→Reject), clippy `-D warnings` clean. Tests: parser 9
+    units + `waf-detection/tests/grpc.rs` 12 (module + §6 content) + `waf-proxy/tests/grpc.rs` 2 e2e
+    (forward+trailer both ways; SQLi-in-field→403). **Streaming + h2-TLS backend = declared deferrals.**
+
 ---
 
 ## 12. Development conventions
@@ -1215,9 +1263,10 @@ security judgment, revisable in the future).
 
 ### Target inventory: custom vs lib
 
-Fuzzed because they are **our code** (7 custom parsers in `waf-normalizer`):
+Fuzzed because they are **our code** (9 custom parsers in `waf-normalizer`):
 percent-decode/`canonicalize_value`, multipart, `normalize_path`/`resolve_path`, `parse_query`,
-`flatten_json` (recursion), cookie, form-urlencoded. **Delegated to libs** (out of scope, trust
+`flatten_json` (recursion), cookie, form-urlencoded, `graphql_lex` (8th, Phase 11), `grpc_extract`
+(9th, gRPC framing + protobuf wire-format, gRPC phase). **Delegated to libs** (out of scope, trust
 in the lib): NFKC → `unicode-normalization`; JSON parse → `serde_json`; header/request-line
 parsing **and chunked transfer-decoding** → **hyper/`http`** (we receive already-parsed headers
 and an already-collected body via `collect().await`). ⚠️ **Explicit trust boundary on hyper**:

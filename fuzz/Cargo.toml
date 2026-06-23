@@ -73,3 +73,10 @@ path = "fuzz_targets/graphql_lex.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "grpc_extract"
+path = "fuzz_targets/grpc_extract.rs"
+test = false
+doc = false
+bench = false

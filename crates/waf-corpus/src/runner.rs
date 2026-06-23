@@ -16,12 +16,13 @@
 
 use waf_core::testkit::Request;
 use waf_core::{
-    Config, GraphqlConfig, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig,
+    Config, GraphqlConfig, GrpcConfig, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig,
     RateLimitConfig, RequestContext, ResilienceConfig, ScoreContribution, SeverityScores,
     WafConfig, WafMode, WafModule,
 };
 use waf_detection::ContentPrefilter;
 use waf_detection::graphql::GraphqlModule;
+use waf_detection::grpc::GrpcModule;
 use waf_detection::header_injection::HeaderInjectionModule;
 use waf_detection::ldap::LdapModule;
 use waf_detection::lfi_rfi::LfiRfiModule;
@@ -216,6 +217,16 @@ fn build_ctx(field: &Field) -> RequestContext {
             req.method("POST").path(path).body(body.as_bytes().to_vec(), content_type).build()
         }
         Field::Get { path, query } => req.method("GET").path(path).raw_query(query).build(),
+        Field::Grpc { value } => req
+            .method("POST")
+            .path("/grpc.Svc/Call")
+            .body(grpc_frame(&grpc_len_field(1, value.as_bytes())), "application/grpc")
+            .build(),
+        Field::GrpcNested { depth, leaf } => req
+            .method("POST")
+            .path("/grpc.Svc/Call")
+            .body(grpc_frame(&grpc_nested(depth, leaf)), "application/grpc")
+            .build(),
         Field::MultipartFile { field, filename, content } => {
             const BOUNDARY: &str = "----corpusFieldCoverage";
             let disposition = match filename {
@@ -243,6 +254,61 @@ fn build_ctx(field: &Field) -> RequestContext {
     }
 }
 
+// ── gRPC body encoders (for `Field::Grpc*`) ─────────────────────────────────────
+
+fn grpc_varint(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
+/// A length-delimited (wire-type 2) protobuf field carrying `data`.
+fn grpc_len_field(field: u64, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    grpc_varint((field << 3) | 2, &mut out);
+    grpc_varint(data.len() as u64, &mut out);
+    out.extend_from_slice(data);
+    out
+}
+
+/// A varint (wire-type 0) field — used to force NON-UTF-8 bytes so a wrapping sub-message
+/// is recursed (not mistaken for a string leaf).
+fn grpc_varint_field(field: u64, value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    grpc_varint(field << 3, &mut out);
+    grpc_varint(value, &mut out);
+    out
+}
+
+/// `depth` nested sub-messages (each wraps a varint → non-UTF-8 → recursion) with a
+/// benign `leaf` string at the bottom.
+fn grpc_nested(depth: u32, leaf: &str) -> Vec<u8> {
+    let mut inner = grpc_varint_field(2, 300);
+    inner.extend_from_slice(&grpc_len_field(15, leaf.as_bytes()));
+    for _ in 0..depth {
+        let mut wrap = grpc_varint_field(2, 300);
+        wrap.extend_from_slice(&grpc_len_field(1, &inner));
+        inner = wrap;
+    }
+    inner
+}
+
+/// Wrap a protobuf message in one uncompressed gRPC frame `[0][len:4 BE][msg]`.
+fn grpc_frame(msg: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8];
+    out.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    out.extend_from_slice(msg);
+    out
+}
+
 /// All detection modules except the rate limiter (neutralized). Mirrors the
 /// proxy's `build_modules` ordering: smuggling first (Connection), then content.
 fn build_pipeline(config: &Config) -> Pipeline {
@@ -263,6 +329,7 @@ fn build_pipeline(config: &Config) -> Pipeline {
         Box::new(XxeModule::new()),
         Box::new(HeaderInjectionModule::new()),
         Box::new(GraphqlModule::new()),
+        Box::new(GrpcModule::new()),
     ];
     Pipeline::new(config, modules)
 }
@@ -307,11 +374,12 @@ fn corpus_config(paranoia: u8, severity: SeverityScores) -> Config {
             severity_scores: severity,
         },
         limits: LimitsConfig::default(),
-        // All modules enabled. The GraphQL module is OFF in production by default
-        // (opt-in), so the corpus harness turns it ON (with introspection-blocking) to
-        // exercise the Phase-11 cases; default caps apply.
+        // All modules enabled. GraphQL and gRPC are OFF in production by default (opt-in),
+        // so the corpus harness turns them ON (graphql with introspection-blocking) to
+        // exercise the structural cases; default caps apply.
         modules: ModulesConfig {
             graphql: GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() },
+            grpc: GrpcConfig { enabled: true, ..Default::default() },
             ..Default::default()
         },
         rate_limit: RateLimitConfig::default(), // enabled = false → neutralized

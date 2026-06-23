@@ -7,6 +7,7 @@
 use crate::Case;
 
 pub mod graphql;
+pub mod grpc;
 pub mod header_injection;
 pub mod ldap;
 pub mod lfi_rfi;
@@ -41,6 +42,7 @@ pub static MODULE_TABLES: &[&[Case]] = &[
     header_injection::CASES,
     request_smuggling::CASES,
     graphql::CASES,
+    grpc::CASES,
 ];
 
 /// Every case in the corpus, flattened.

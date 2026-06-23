@@ -273,6 +273,7 @@ pub enum ConfigError {
     EmptyClientIpHeader,
     ResilienceTimeoutZero,
     GraphqlCapZero(&'static str),
+    GrpcCapZero(&'static str),
     TlsPathEmpty(&'static str),
     TlsAlpnInvalid,
 }
@@ -304,6 +305,8 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "resilience.upstream_timeout_ms must be >= 1"),
             Self::GraphqlCapZero(name) =>
                 write!(f, "modules.graphql.{name} must be >= 1 when the graphql module is enabled"),
+            Self::GrpcCapZero(name) =>
+                write!(f, "modules.grpc.{name} must be >= 1 when the grpc module is enabled"),
             Self::TlsPathEmpty(name) =>
                 write!(f, "tls.{name} must be set (a PEM file path) when tls is enabled"),
             Self::TlsAlpnInvalid =>
@@ -432,6 +435,20 @@ impl Config {
             }
         }
 
+        // gRPC caps: a 0 cap would reject every message → only meaningful when enabled.
+        if self.modules.grpc.enabled {
+            let g = &self.modules.grpc;
+            for (name, zero) in [
+                ("max_message_bytes", g.max_message_bytes == 0),
+                ("max_fields", g.max_fields == 0),
+                ("max_depth", g.max_depth == 0),
+            ] {
+                if zero {
+                    return Err(ConfigError::GrpcCapZero(name));
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -543,6 +560,12 @@ pub struct ModulesConfig {
     /// Default OFF: it is endpoint-specific and the caps need per-app tuning (Phase 11).
     #[serde(default)]
     pub graphql: GraphqlConfig,
+    /// gRPC structural protections (message size / field count / nesting depth) + a
+    /// compressed-payload policy. Structural, like request_smuggling/graphql — the
+    /// CONTENT of protobuf fields is inspected by the normal modules via the §6 derived
+    /// channel. Default OFF: gRPC needs HTTP/2 and the caps are per-app (gRPC phase).
+    #[serde(default)]
+    pub grpc: GrpcConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -611,6 +634,59 @@ impl Default for GraphqlConfig {
             max_directives: default_graphql_max_directives(),
             max_batch: default_graphql_max_batch(),
             block_introspection: false,
+        }
+    }
+}
+
+/// What to do with a gRPC message whose payload is COMPRESSED (per-message flag set or a
+/// non-identity `grpc-encoding`): its bytes are opaque to the WAF, so it cannot be
+/// inspected. `Reject` (default) is fail-closed — a `gzip` payload you let through is a
+/// trivial bypass (compress the attack, skip the WAF). `Passthrough` forwards it
+/// UNINSPECTED — a deliberate, on-record choice for a backend that requires compression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressedPolicy {
+    Reject,
+    Passthrough,
+}
+
+/// gRPC module configuration (gRPC phase). Structural DoS/abuse caps on the framed
+/// protobuf body (message size / field count / nesting depth) + a compressed-payload
+/// policy. Structural only — protobuf field CONTENT flows to the normal content modules
+/// via the §6 derived channel, not through this module. Counts come from the
+/// [`grpc_extract`](../waf_normalizer/grpc/fn.grpc_extract.html) pass.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrpcConfig {
+    /// Default OFF (opt-in per deployment; needs HTTP/2).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Max total inspectable payload bytes across the framed messages in one request.
+    #[serde(default = "default_grpc_max_message_bytes")]
+    pub max_message_bytes: u64,
+    /// Max protobuf field count (field-bomb cap).
+    #[serde(default = "default_grpc_max_fields")]
+    pub max_fields: u32,
+    /// Max sub-message nesting depth (depth-bomb cap).
+    #[serde(default = "default_grpc_max_depth")]
+    pub max_depth: u32,
+    /// What to do with a compressed (un-inspectable) payload. Default `reject` (fail-closed).
+    #[serde(default = "default_grpc_on_compressed")]
+    pub on_compressed: CompressedPolicy,
+}
+
+fn default_grpc_max_message_bytes() -> u64 { 4 * 1024 * 1024 }
+fn default_grpc_max_fields() -> u32 { 4096 }
+fn default_grpc_max_depth() -> u32 { 16 }
+fn default_grpc_on_compressed() -> CompressedPolicy { CompressedPolicy::Reject }
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_message_bytes: default_grpc_max_message_bytes(),
+            max_fields: default_grpc_max_fields(),
+            max_depth: default_grpc_max_depth(),
+            on_compressed: default_grpc_on_compressed(),
         }
     }
 }
@@ -880,6 +956,24 @@ mod config_validation_tests {
         let mut c = valid();
         c.waf.block_threshold = 0;
         assert_eq!(c.validate(), Err(ConfigError::BlockThresholdZero));
+    }
+
+    #[test]
+    fn grpc_disabled_ignores_caps() {
+        // Default grpc is off → caps not validated (cleartext/no-gRPC deploy).
+        assert!(valid().validate().is_ok());
+    }
+
+    #[test]
+    fn grpc_enabled_rejects_zero_caps() {
+        let mut c = valid();
+        c.modules.grpc.enabled = true;
+        assert!(c.validate().is_ok()); // defaults are all >= 1
+        c.modules.grpc.max_depth = 0;
+        assert_eq!(c.validate(), Err(ConfigError::GrpcCapZero("max_depth")));
+        c.modules.grpc.max_depth = 16;
+        c.modules.grpc.max_message_bytes = 0;
+        assert_eq!(c.validate(), Err(ConfigError::GrpcCapZero("max_message_bytes")));
     }
 
     #[test]

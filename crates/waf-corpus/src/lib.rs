@@ -73,6 +73,7 @@ pub enum Module {
     HeaderInjection,
     RequestSmuggling,
     Graphql,
+    Grpc,
 }
 
 impl Module {
@@ -96,6 +97,7 @@ impl Module {
             Module::HeaderInjection => "header_injection",
             Module::RequestSmuggling => "request_smuggling",
             Module::Graphql => "graphql",
+            Module::Grpc => "grpc",
         }
     }
 }
@@ -124,6 +126,15 @@ pub enum Field {
     /// GET to a specific `path` with a raw query string — for path-dependent GET cases
     /// (e.g. GraphQL over GET `?query=`). (Phase 11.)
     Get { path: &'static str, query: &'static str },
+    /// A unary gRPC request whose single protobuf string field (field 1) carries `value`.
+    /// The runner frames it (`[flag][len][{1: value}]`) with `Content-Type:
+    /// application/grpc` — for the §6 CONTENT path (a SQLi/XSS smuggled in a field).
+    Grpc { value: &'static str },
+    /// A unary gRPC request whose body is `depth` nested sub-messages wrapping a benign
+    /// `leaf` (each level forced non-UTF-8 so the parser recurses). For the structural
+    /// nesting trap (benign-but-deep → no false Reject) and the depth-bomb (beyond the cap
+    /// → Reject). The runner frames + Content-Type as above.
+    GrpcNested { depth: u32, leaf: &'static str },
     /// A single `multipart/form-data` part. The runner assembles the raw multipart
     /// body (fixed boundary) from the form field `name`, an optional `filename`
     /// and the part `content`, so field-coverage cases can target the name /

@@ -26,6 +26,7 @@ Goals: *light* (few dependencies), *fast* (< 1 ms p99 on the common path), *modu
 | Header injection (CRLF) | path + headers/query/cookie/body | field-aware (per-rule scope); CRLF smuggled in the URL path |
 | Request smuggling (CL/TE) | connection | structural framing validation → 400 |
 | GraphQL (structural) | body (JSON / `application/graphql` / GET `?query=`) | DoS/abuse caps on the operation shape — depth / aliases / fields / directives / batch → 400, introspection → 403; opt-in per endpoint |
+| gRPC (structural) | body (`application/grpc*`, HTTP/2) | de-frames the protobuf body → fields inspected by the content modules (§6); structural caps (message size / field count / nesting depth) + compressed-payload policy → 400; opt-in. Forwards h2c with trailer relay (unary) |
 | Rate limiting L7 | connection | token bucket per resolved IP |
 
 Plus: anti-evasion normalization (double-encoding-aware percent-decode + NFKC +

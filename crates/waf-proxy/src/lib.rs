@@ -4,15 +4,17 @@ pub mod tls;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::SystemTime;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes, Frame, Incoming};
 use hyper::service::service_fn;
-use hyper::{Request, Response, Uri};
+use hyper::{HeaderMap, Request, Response, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -26,7 +28,7 @@ use waf_core::{
     WafModule,
 };
 use waf_detection::{
-    graphql::GraphqlModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
+    graphql::GraphqlModule, grpc::GrpcModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
     lfi_rfi::LfiRfiModule,
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
@@ -63,6 +65,68 @@ pub fn full_body(data: impl Into<Bytes>) -> HyperBoxBody {
     Full::new(data.into())
         .map_err(|never| match never {})
         .boxed()
+}
+
+/// A buffered body that emits one DATA frame, then one TRAILERS frame. A plain `Full`
+/// cannot carry trailers; gRPC puts its status in HTTP/2 trailers (`grpc-status`/
+/// `grpc-message`), so relaying them requires this. Used only when trailers are present —
+/// the non-gRPC path keeps using `full_body` (byte-identical to before).
+struct FramedBody {
+    data: Option<Bytes>,
+    trailers: Option<HeaderMap>,
+}
+
+impl Body for FramedBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        if let Some(d) = self.data.take() {
+            return Poll::Ready(Some(Ok(Frame::data(d))));
+        }
+        if let Some(t) = self.trailers.take() {
+            return Poll::Ready(Some(Ok(Frame::trailers(t))));
+        }
+        Poll::Ready(None)
+    }
+}
+
+/// Box a buffered body, attaching `trailers` when present. With no trailers this is exactly
+/// `full_body` (so the non-gRPC datapath is unchanged); with trailers it is a `FramedBody`.
+fn body_with_trailers(data: Bytes, trailers: Option<HeaderMap>) -> HyperBoxBody {
+    match trailers {
+        None => full_body(data),
+        Some(t) => FramedBody { data: Some(data), trailers: Some(t) }
+            .map_err(|never| match never {})
+            .boxed(),
+    }
+}
+
+/// Collect a body into `(bytes, trailers)` — the trailer-preserving alternative to
+/// `collect().to_bytes()`. Keeps the buffered model (so the body is still inspectable)
+/// while not discarding the trailers that follow it (Step-0 invariant).
+async fn collect_with_trailers<B>(body: B) -> Result<(Bytes, Option<HeaderMap>), B::Error>
+where
+    B: Body<Data = Bytes>,
+{
+    let collected = body.collect().await?;
+    let trailers = collected.trailers().cloned();
+    Ok((collected.to_bytes(), trailers))
+}
+
+/// A gRPC request, by Content-Type (`application/grpc`, `+proto`, `-web`, …). Such requests
+/// are forwarded over h2c with their trailers relayed; everything else takes the unchanged
+/// h1 path.
+fn is_grpc_request(parts: &hyper::http::request::Parts) -> bool {
+    parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.trim_start().starts_with("application/grpc"))
+        .unwrap_or(false)
 }
 
 fn parse_cookies(headers: &[(String, String)]) -> Vec<(String, String)> {
@@ -160,6 +224,10 @@ struct Reloadable {
 /// - `current`: the atomically-swappable `Reloadable`.
 struct StaticState {
     client: Client<HttpConnector, HyperBoxBody>,
+    /// A SEPARATE h2c (HTTP/2 prior-knowledge) client used ONLY for gRPC targets. Kept
+    /// distinct from `client` on purpose: flipping the general client to `http2_only` would
+    /// break all existing h1 forwarding — gRPC needs end-to-end h2, the rest stays h1.
+    grpc_client: Client<HttpConnector, HyperBoxBody>,
     listen_addr: SocketAddr,
     rl_state: RateLimitState,
     current: RwLock<Arc<Reloadable>>,
@@ -321,7 +389,9 @@ async fn try_forward(
     let rel = state.current();
 
     let (parts, body) = req.into_parts();
-    let body_bytes = body.collect().await?.to_bytes();
+    // Collect the body for inspection AND keep any trailers (gRPC carries `grpc-status` in
+    // HTTP/2 trailers); they are relayed to the backend, never inspected.
+    let (body_bytes, req_trailers) = collect_with_trailers(body).await?;
 
     let mut ctx = build_context(&parts, &body_bytes, client_addr, &rel.ip_resolver);
 
@@ -392,7 +462,7 @@ async fn try_forward(
         }
     }
 
-    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, client_addr, &ctx).await
+    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, req_trailers, client_addr, &ctx).await
 }
 
 /// The SINGLE forwarding path. Both the inspecting handler (`try_forward`) and the
@@ -400,16 +470,22 @@ async fn try_forward(
 /// no-WAF leg cannot drift from production forwarding — the §13 duplicate-path risk is
 /// removed at the root, not mitigated. Behaviour is unchanged vs the inlined version
 /// (proven by the `passthrough_*` integration tests, green before and after the extract).
+// Forwarding intrinsically threads many request facets (config snapshot, parts, payload +
+// trailers, peer, context); bundling them into a struct would only move the list, not
+// shorten the data this single forwarding path needs.
+#[allow(clippy::too_many_arguments)]
 async fn forward_to_backend(
     state: &StaticState,
     rel: &Reloadable,
     parts: &hyper::http::request::Parts,
     path_and_query: &str,
     body_bytes: Bytes,
+    req_trailers: Option<HeaderMap>,
     client_addr: SocketAddr,
     ctx: &RequestContext,
 ) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
     let backend_uri: Uri = format!("{}{}", rel.backend, path_and_query).parse()?;
+    let is_grpc = is_grpc_request(parts);
 
     let mut builder = Request::builder()
         .method(parts.method.clone())
@@ -424,22 +500,36 @@ async fn forward_to_backend(
     // the resolved client IP — that would corrupt the forwarded chain semantics.
     builder = builder.header("x-forwarded-for", client_addr.ip().to_string());
     builder = builder.header("x-request-id", ctx.request_id.as_str());
+    // gRPC requires `TE: trailers` on the request (stripped above as hop-by-hop) so the
+    // backend negotiates trailer delivery — re-add it for gRPC targets only.
+    if is_grpc {
+        builder = builder.header("te", "trailers");
+    }
 
-    let fwd_req = builder.body(full_body(body_bytes))?;
+    // gRPC: relay the request trailers and forward over the dedicated h2c client. Non-gRPC:
+    // a plain `Full` body over the existing h1 client — byte-identical to before.
+    let (client, fwd_body) = if is_grpc {
+        (&state.grpc_client, body_with_trailers(body_bytes, req_trailers))
+    } else {
+        (&state.client, full_body(body_bytes))
+    };
+    let fwd_req = builder.body(fwd_body)?;
 
     // Upstream round-trip under a hard timeout so a stalled origin cannot pin the
     // worker. Connection/timeout failures apply on_upstream_error (502/503),
     // returned here rather than bubbling to the generic 502 in `handle`.
     let upstream = tokio::time::timeout(rel.resilience.upstream_timeout(), async {
-        let resp = state.client.request(fwd_req).await?;
+        let resp = client.request(fwd_req).await?;
         let (resp_parts, resp_body) = resp.into_parts();
-        let resp_bytes = resp_body.collect().await?.to_bytes();
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((resp_parts, resp_bytes))
+        // Keep the response trailers (gRPC `grpc-status`/`grpc-message`); they are relayed,
+        // not inspected. A non-gRPC h1 response has none → `None` → a plain body downstream.
+        let (resp_bytes, resp_trailers) = collect_with_trailers(resp_body).await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((resp_parts, resp_bytes, resp_trailers))
     })
     .await;
 
-    let (resp_parts, resp_bytes) = match upstream {
-        Ok(Ok(pair)) => pair,
+    let (resp_parts, resp_bytes, resp_trailers) = match upstream {
+        Ok(Ok(triple)) => triple,
         Ok(Err(e)) => return Ok(upstream_error_response(ctx, &rel.resilience, &e.to_string())),
         Err(_elapsed) => {
             return Ok(upstream_error_response(ctx, &rel.resilience, "upstream timeout"))
@@ -453,7 +543,7 @@ async fn forward_to_backend(
         "← response"
     );
 
-    Ok(Response::from_parts(resp_parts, full_body(resp_bytes)))
+    Ok(Response::from_parts(resp_parts, body_with_trailers(resp_bytes, resp_trailers)))
 }
 
 /// `#[doc(hidden)]` passthrough seam: build the context and forward, SKIPPING the
@@ -469,7 +559,7 @@ async fn try_passthrough(
 ) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
     let rel = state.current();
     let (parts, body) = req.into_parts();
-    let body_bytes = body.collect().await?.to_bytes();
+    let (body_bytes, req_trailers) = collect_with_trailers(body).await?;
     let ctx = build_context(&parts, &body_bytes, client_addr, &rel.ip_resolver);
     let path_and_query = parts
         .uri
@@ -477,7 +567,7 @@ async fn try_passthrough(
         .map(|pq| pq.as_str())
         .unwrap_or("/")
         .to_string();
-    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, client_addr, &ctx).await
+    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, req_trailers, client_addr, &ctx).await
 }
 
 async fn handle(
@@ -565,6 +655,9 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     if config.modules.graphql.enabled {
         modules.push(Box::new(GraphqlModule::new()));
     }
+    if config.modules.grpc.enabled {
+        modules.push(Box::new(GrpcModule::new()));
+    }
     modules
 }
 
@@ -648,6 +741,9 @@ impl Proxy {
         let listen_addr = listener.local_addr()?;
         let client: Client<HttpConnector, HyperBoxBody> =
             Client::builder(TokioExecutor::new()).build(HttpConnector::new());
+        // Dedicated h2c client for gRPC backends (prior-knowledge HTTP/2 over cleartext).
+        let grpc_client: Client<HttpConnector, HyperBoxBody> =
+            Client::builder(TokioExecutor::new()).http2_only(true).build(HttpConnector::new());
 
         // Build the TLS terminator BEFORE serving: a required cert that cannot be loaded
         // is a fatal boot error (fail-closed), never a silent downgrade to cleartext.
@@ -666,6 +762,7 @@ impl Proxy {
             listener,
             state: Arc::new(StaticState {
                 client,
+                grpc_client,
                 listen_addr,
                 rl_state,
                 current: RwLock::new(Arc::new(reloadable)),

@@ -20,7 +20,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::{TcpListener, TcpStream};
 
 use waf_core::{
-    Config, GrpcConfig, LimitsConfig, ModulesConfig, ProxyConfig, WafConfig, WafMode,
+    Config, GrpcConfig, WafMode,
 };
 use waf_proxy::Proxy;
 
@@ -130,27 +130,12 @@ async fn start_grpc_backend() -> std::net::SocketAddr {
 // ── proxy + client ───────────────────────────────────────────────────────────────
 
 fn grpc_config(backend: std::net::SocketAddr) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            backend: format!("http://{backend}"),
-        },
-        waf: WafConfig {
-            mode: WafMode::Blocking,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig {
-            grpc: GrpcConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        },
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.proxy.listen = "127.0.0.1:0".parse().unwrap();
+    c.proxy.backend = format!("http://{backend}");
+    c.waf.mode = WafMode::Blocking;
+    c.modules.grpc = GrpcConfig { enabled: true, ..Default::default() };
+    c
 }
 
 /// Send a unary gRPC request (body + optional request trailer) to the proxy over h2c.

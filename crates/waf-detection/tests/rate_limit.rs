@@ -5,43 +5,30 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use waf_core::{
-    Bytes, Config, Decision, LimitsConfig, ModulesConfig, Normalized, ProxyConfig, RateLimitAction,
-    RateLimitConfig, RateLimitKey, RequestContext, WafConfig, WafMode, WafModule,
+    Bytes, Config, Decision, InMemoryStateStore, ManualClock,
+    Normalized, RateLimitAction, RateLimitConfig, RateLimitKey, RateLimitState,
+    RequestContext, StateStore, WafMode, WafModule,
 };
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
-use waf_detection::rate_limit::{ManualClock, RateLimitModule};
+use waf_detection::rate_limit::RateLimitModule;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn config(requests: u32, window: u64, burst: u32, action: RateLimitAction, mode: WafMode) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: RateLimitConfig {
-            enabled: true,
-            key: RateLimitKey::ClientIp,
-            requests,
-            window_seconds: window,
-            burst: Some(burst),
-            action,
-            score: 5,
-            max_tracked_keys: 1000,
-        },
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = mode;
+    c.rate_limit = RateLimitConfig {
+        enabled: true,
+        key: RateLimitKey::ClientIp,
+        requests,
+        window_seconds: window,
+        burst: Some(burst),
+        action,
+        score: 5,
+        max_tracked_keys: 1000,
+    };
+    c
 }
 
 fn ctx_ip(ip: &str) -> RequestContext {
@@ -187,19 +174,56 @@ fn rl_disabled_allows_everything() {
 #[test]
 fn rl_idle_buckets_are_evicted_at_cap() {
     let clock = Arc::new(ManualClock::new());
-    let mut cfg = config(2, 1, 2, RateLimitAction::Block, WafMode::Blocking); // full-refill = 1s
-    cfg.rate_limit.max_tracked_keys = 2;
-    let m = module(clock.clone(), &cfg);
+    let cfg = config(2, 1, 2, RateLimitAction::Block, WafMode::Blocking); // full-refill = 1s
+    // The cap now lives on the store; keep a concrete handle to inspect tracked_keys().
+    let store = Arc::new(InMemoryStateStore::with_clock_and_cap(clock.clone(), 2));
+    let mut m = RateLimitModule::with_state(RateLimitState::with_store(
+        store.clone() as Arc<dyn StateStore>,
+    ));
+    m.init(&cfg);
 
     m.inspect(&ctx_ip("10.0.0.1"));
     m.inspect(&ctx_ip("10.0.0.2"));
-    assert_eq!(m.tracked_keys(), 2);
+    assert_eq!(store.tracked_keys(), 2);
 
     // Advance past the full-refill window so the two buckets are "full"/idle,
     // then a third key triggers the cap sweep.
     clock.advance(Duration::from_secs(5));
     m.inspect(&ctx_ip("10.0.0.3"));
-    assert_eq!(m.tracked_keys(), 1, "idle buckets should have been swept");
+    assert_eq!(store.tracked_keys(), 1, "idle buckets should have been swept");
+}
+
+// ── atomicity (the reason the ABI is try_acquire, not get/update) ───────────────
+
+#[test]
+fn rl_try_acquire_is_atomic_under_concurrency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use waf_core::BucketParams;
+
+    // capacity 100, no refill: across all threads exactly 100 grants are allowed.
+    // A non-atomic get/update store would over-allow (two threads read the same
+    // level and both consume).
+    const CAPACITY: usize = 100;
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let params = BucketParams { capacity: CAPACITY as f64, refill_per_sec: 0.0 };
+    let allowed = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let store = store.clone();
+        let allowed = allowed.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..500 {
+                if store.try_acquire("same-key", 1.0, params).allowed {
+                    allowed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(allowed.load(Ordering::Relaxed), CAPACITY, "atomic store must grant exactly capacity");
 }
 
 // ── pipeline integration (mode semantics) ──────────────────────────────────────

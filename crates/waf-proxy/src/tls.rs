@@ -123,15 +123,28 @@ pub fn build_server_config(source: &dyn TlsCertSource, alpn: &[String]) -> Resul
     Ok(cfg)
 }
 
-/// Build the [`TlsAcceptor`] from config, or `Ok(None)` when TLS is off (cleartext). An
-/// enabled-but-unbuildable terminator is `Err` → the proxy fails to bind (fatal boot, no
-/// silent cleartext fallback). Uses [`FileCertSource`]; swap the source for an enterprise
-/// one without touching this signature.
-pub fn acceptor_from_config(tls: &TlsConfig) -> Result<Option<TlsAcceptor>, TlsError> {
+/// Build the [`TlsAcceptor`] with an **injected** cert source, or `Ok(None)` when TLS is
+/// off. `tls.enabled` (operator switch) and `tls.alpn` still come from config; the source
+/// only governs cert *provenance* — when `Some`, the file paths in config are ignored, so
+/// an enterprise ACME/managed-PKI source needs no `cert_path`/`key_path`. `None` falls back
+/// to the OPEN [`FileCertSource`]. An enabled-but-unbuildable terminator is `Err` → the
+/// proxy fails to bind (fatal boot, no silent cleartext fallback).
+pub fn acceptor_from_source(
+    tls: &TlsConfig,
+    source: Option<Arc<dyn TlsCertSource>>,
+) -> Result<Option<TlsAcceptor>, TlsError> {
     if !tls.enabled {
         return Ok(None);
     }
-    let source = FileCertSource::new(&tls.cert_path, &tls.key_path);
-    let cfg = build_server_config(&source, &tls.alpn)?;
+    let cfg = match source {
+        Some(s) => build_server_config(s.as_ref(), &tls.alpn)?,
+        None => build_server_config(&FileCertSource::new(&tls.cert_path, &tls.key_path), &tls.alpn)?,
+    };
     Ok(Some(TlsAcceptor::from(Arc::new(cfg))))
+}
+
+/// Build the [`TlsAcceptor`] from config with the default OPEN [`FileCertSource`]. Thin
+/// wrapper over [`acceptor_from_source`] with no injected source.
+pub fn acceptor_from_config(tls: &TlsConfig) -> Result<Option<TlsAcceptor>, TlsError> {
+    acceptor_from_source(tls, None)
 }

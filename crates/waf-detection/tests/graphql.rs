@@ -7,34 +7,18 @@
 //! the fix the document was opaque JSON string content → introspection/DoS invisible).
 
 use waf_core::{
-    Bytes, Config, Decision, GraphqlConfig, LimitsConfig, ModulesConfig, Normalized, ProxyConfig,
-    RequestContext, WafConfig, WafMode, WafModule,
+    Bytes, Config, Decision, GraphqlConfig, Normalized,
+    RequestContext, WafMode, WafModule,
 };
 
 use waf_detection::graphql::GraphqlModule;
 
 fn config() -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode: WafMode::Blocking,
-            block_threshold: 5,
-            paranoia_level: 3,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig {
-            graphql: GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() },
-            ..Default::default()
-        },
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = WafMode::Blocking;
+    c.waf.paranoia_level = 3;
+    c.modules.graphql = GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() };
+    c
 }
 
 fn module() -> GraphqlModule {

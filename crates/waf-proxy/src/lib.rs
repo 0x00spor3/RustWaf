@@ -24,17 +24,19 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+
+use tls::TlsCertSource;
 use tracing::{error, info, warn};
 
 use waf_core::{
-    ClientIpResolver, Config, FailMode, IpSource, Normalized, RequestContext, ResilienceConfig,
-    WafModule,
+    ClientIpResolver, Config, FailMode, IpSource, Normalized, RateLimitState, RequestContext,
+    ResilienceConfig, StateStore, WafModule,
 };
 use waf_detection::{
     graphql::GraphqlModule, grpc::GrpcModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
     lfi_rfi::LfiRfiModule,
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
-    rate_limit::{RateLimitModule, RateLimitState},
+    rate_limit::RateLimitModule,
     rce::RceModule, request_smuggling::RequestSmugglingModule, scanner::ScannerModule,
     sqli::SqliModule, ssi::SsiModule, ssrf::SsrfModule, ssti::SstiModule, xss::XssModule,
     xxe::XxeModule, ContentPrefilter,
@@ -707,21 +709,38 @@ fn build_reloadable(
 }
 
 impl Proxy {
+    /// Bind a proxy from config with the default extension surface (built-in
+    /// modules, in-memory rate-limit store, file-based TLS cert). For embedding —
+    /// injecting a custom store or extra modules — use [`Proxy::builder`].
     pub async fn bind(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_with_modules(config, Vec::new()).await
+        Self::builder(config).build().await
+    }
+
+    /// Start configuring a proxy with injectable extension points (the stable
+    /// embedding API): extra detection modules and the rate-limit [`StateStore`].
+    /// Every seam has a default, so `Proxy::builder(cfg).build()` equals
+    /// [`Proxy::bind`].
+    pub fn builder(config: &Config) -> ProxyBuilder<'_> {
+        ProxyBuilder {
+            config,
+            modules: Vec::new(),
+            state_store: None,
+            cert_source: None,
+            mode: HandlerMode::Inspect,
+        }
     }
 
     /// Bind with extra detection modules appended after the built-in set.
     ///
-    /// Test/advanced seam: used by integration tests to inject a panicking module
-    /// and verify Pillar-2 isolation. Not a stable public embedding API — hidden
-    /// from the rendered docs.
+    /// Internal seam kept for integration tests (inject a panicking module to verify
+    /// Pillar-2 isolation). The stable public equivalent is
+    /// `Proxy::builder(cfg).modules(..).build()`.
     #[doc(hidden)]
     pub async fn bind_with_modules(
         config: &Config,
         extra: Vec<Box<dyn WafModule>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_inner(config, extra, HandlerMode::Inspect).await
+        Self::bind_inner(config, extra, HandlerMode::Inspect, None, None).await
     }
 
     /// `#[doc(hidden)]` bench seam: bind a proxy that FORWARDS WITHOUT inspecting (no
@@ -732,13 +751,15 @@ impl Proxy {
     pub async fn bind_passthrough(
         config: &Config,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_inner(config, Vec::new(), HandlerMode::Passthrough).await
+        Self::bind_inner(config, Vec::new(), HandlerMode::Passthrough, None, None).await
     }
 
     async fn bind_inner(
         config: &Config,
         extra: Vec<Box<dyn WafModule>>,
         mode: HandlerMode,
+        state_store: Option<RateLimitState>,
+        cert_source: Option<Arc<dyn TlsCertSource>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(config.proxy.listen).await?;
         let listen_addr = listener.local_addr()?;
@@ -749,16 +770,20 @@ impl Proxy {
             Client::builder(TokioExecutor::new()).http2_only(true).build(HttpConnector::new());
 
         // Build the TLS terminator BEFORE serving: a required cert that cannot be loaded
-        // is a fatal boot error (fail-closed), never a silent downgrade to cleartext.
-        let tls_acceptor = tls::acceptor_from_config(&config.tls)
+        // is a fatal boot error (fail-closed), never a silent downgrade to cleartext. An
+        // injected cert source (e.g. enterprise ACME/mTLS) replaces the default file source.
+        let tls_acceptor = tls::acceptor_from_source(&config.tls, cert_source)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         if tls_acceptor.is_some() {
             info!(listen = %listen_addr, alpn = ?config.tls.alpn, "TLS termination enabled");
         }
 
         // The rate-limiter bucket store lives here (process lifetime), shared into
-        // every (re)built pipeline so reloads never reset the throttle.
-        let rl_state = RateLimitState::new();
+        // every (re)built pipeline so reloads never reset the throttle. The
+        // tracked-key cap is fixed at boot (the store outlives reloads). An injected
+        // store (e.g. enterprise Redis) replaces the default in-memory one.
+        let rl_state = state_store
+            .unwrap_or_else(|| RateLimitState::in_memory(config.rate_limit.max_tracked_keys));
         let reloadable = build_reloadable(config, rl_state.clone(), extra);
 
         Ok(Self {
@@ -811,6 +836,57 @@ impl Proxy {
                 }
             });
         }
+    }
+}
+
+/// Stable builder for embedding the proxy with custom extension points. Obtain it
+/// via [`Proxy::builder`]. Every seam defaults to the built-in behaviour, so a
+/// builder with no overrides is identical to [`Proxy::bind`]. The enterprise plugs
+/// a distributed rate-limit store or premium modules here **without forking**
+/// (BOUNDARY §4).
+pub struct ProxyBuilder<'a> {
+    config: &'a Config,
+    modules: Vec<Box<dyn WafModule>>,
+    state_store: Option<RateLimitState>,
+    cert_source: Option<Arc<dyn TlsCertSource>>,
+    mode: HandlerMode,
+}
+
+impl<'a> ProxyBuilder<'a> {
+    /// Replace the extra detection modules appended after the built-in set. These
+    /// run after the built-ins and are NOT carried across a config reload.
+    pub fn modules(mut self, modules: Vec<Box<dyn WafModule>>) -> Self {
+        self.modules = modules;
+        self
+    }
+
+    /// Append a single extra detection module (additive over [`Self::modules`]).
+    pub fn add_module(mut self, module: Box<dyn WafModule>) -> Self {
+        self.modules.push(module);
+        self
+    }
+
+    /// Inject the rate-limit [`StateStore`] (e.g. a distributed Redis store). The
+    /// store survives config reloads. Defaults to the in-memory token bucket sized
+    /// from `[rate_limit].max_tracked_keys`.
+    pub fn state_store(mut self, store: Arc<dyn StateStore>) -> Self {
+        self.state_store = Some(RateLimitState::with_store(store));
+        self
+    }
+
+    /// Inject the [`TlsCertSource`] (e.g. enterprise ACME/managed-PKI/mTLS). `[tls].enabled`
+    /// and `[tls].alpn` still come from config; the source only governs cert provenance, so
+    /// the config `cert_path`/`key_path` are ignored when one is injected. Defaults to the
+    /// OPEN `FileCertSource` reading those paths.
+    pub fn cert_source(mut self, source: Arc<dyn TlsCertSource>) -> Self {
+        self.cert_source = Some(source);
+        self
+    }
+
+    /// Bind the listener and construct the proxy with the chosen seams.
+    pub async fn build(self) -> Result<Proxy, Box<dyn std::error::Error + Send + Sync>> {
+        Proxy::bind_inner(self.config, self.modules, self.mode, self.state_store, self.cert_source)
+            .await
     }
 }
 

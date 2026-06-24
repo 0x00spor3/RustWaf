@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use waf_core::{
-    Bytes, Config, Decision, LimitsConfig, ModulesConfig, Normalized, ProxyConfig, RequestContext,
-    WafConfig, WafMode, WafModule,
+    Bytes, Config, Decision, Normalized, RequestContext, WafMode, WafModule,
 };
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
@@ -12,24 +11,9 @@ use waf_detection::request_smuggling::RequestSmugglingModule;
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn config(mode: WafMode) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(), // request_smuggling enabled by default
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = mode; // modules: request_smuggling enabled by default
+    c
 }
 
 fn ctx_with_headers(headers: &[(&str, &str)]) -> RequestContext {

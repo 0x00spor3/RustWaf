@@ -1,107 +1,30 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use tracing::warn;
-use waf_core::{Config, Decision, Phase, RateLimitAction, RateLimitKey, RequestContext, WafModule};
+use waf_core::{
+    BucketParams, Clock, Config, Decision, Phase, RateLimitAction, RateLimitKey, RateLimitState,
+    RequestContext, WafModule,
+};
 
-// ── clock (injectable for deterministic tests) ────────────────────────────────
-
-/// Monotonic time source. `Instant` is opaque in Rust, so `ManualClock` starts
-/// from a real `Instant::now()` and advances by adding `Duration` — it never
-/// constructs arbitrary instants.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> Instant;
-}
-
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-}
-
-/// Test clock: advances explicitly via `advance`.
-pub struct ManualClock {
-    base: Instant,
-    offset: Mutex<Duration>,
-}
-
-impl ManualClock {
-    pub fn new() -> Self {
-        Self { base: Instant::now(), offset: Mutex::new(Duration::ZERO) }
-    }
-    pub fn advance(&self, by: Duration) {
-        *self.offset.lock().unwrap() += by;
-    }
-}
-
-impl Default for ManualClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Instant {
-        self.base + *self.offset.lock().unwrap()
-    }
-}
-
-// ── token bucket ──────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy)]
-struct Bucket {
-    tokens: f64,
-    last: Instant,
-}
-
-struct RlState {
-    buckets: HashMap<String, Bucket>,
-}
-
-/// Shared, **non-reloadable** token-bucket store. Lives outside the module so a
-/// config hot reload (Fase 6 / Pillar 3) rebuilds the module's *parameters*
-/// (capacity/refill/action) while the buckets **survive** — otherwise an attacker
-/// could clear their own throttle by triggering a reload. The critical section is
-/// a short, synchronous map update (never held across `.await`), so `std::Mutex`
-/// is the right choice.
-#[derive(Clone)]
-pub struct RateLimitState(Arc<Mutex<RlState>>);
-
-impl RateLimitState {
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(RlState { buckets: HashMap::new() })))
-    }
-}
-
-impl Default for RateLimitState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── module ────────────────────────────────────────────────────────────────────
+// The token-bucket store, the `StateStore` seam, and the clock live in `waf-core`
+// (`waf_core::state`) so the enterprise can inject a distributed store without a
+// fork. This module is just the `WafModule` that drives that store from config.
 
 pub struct RateLimitModule {
     enabled: bool,
-    capacity: f64,
-    refill_per_sec: f64,
+    params: BucketParams,
     action: RateLimitAction,
     score: u32,
     key: RateLimitKey,
-    max_tracked_keys: usize,
-    clock: Arc<dyn Clock>,
     state: RateLimitState,
 }
 
 impl Default for RateLimitModule {
     fn default() -> Self {
-        Self::with_clock(Arc::new(SystemClock))
+        Self::with_state(RateLimitState::new())
     }
 }
 
@@ -110,34 +33,23 @@ impl RateLimitModule {
         Self::default()
     }
 
-    /// Construct with a custom clock (used by tests). Buckets are private.
+    /// Construct with a custom clock (used by tests): an in-memory store driven by
+    /// that clock, default tracked-key cap.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
-        Self::with_clock_and_state(clock, RateLimitState::new())
+        Self::with_state(RateLimitState::in_memory_with_clock(clock, DEFAULT_MAX_TRACKED_KEYS))
     }
 
-    /// Construct with a **shared** bucket store, reinjected across reloads so the
-    /// throttle state persists when only config parameters change.
+    /// Construct with a **shared** store, reinjected across reloads so the throttle
+    /// state persists when only config parameters change.
     pub fn with_state(state: RateLimitState) -> Self {
-        Self::with_clock_and_state(Arc::new(SystemClock), state)
-    }
-
-    fn with_clock_and_state(clock: Arc<dyn Clock>, state: RateLimitState) -> Self {
         Self {
             enabled: false,
-            capacity: 0.0,
-            refill_per_sec: 0.0,
+            params: BucketParams { capacity: 0.0, refill_per_sec: 0.0 },
             action: RateLimitAction::Block,
             score: 0,
             key: RateLimitKey::ClientIp,
-            max_tracked_keys: 0,
-            clock,
             state,
         }
-    }
-
-    /// Number of currently tracked keys (for tests/metrics).
-    pub fn tracked_keys(&self) -> usize {
-        self.state.0.lock().unwrap().buckets.len()
     }
 
     fn key_for(&self, ctx: &RequestContext) -> String {
@@ -150,23 +62,17 @@ impl RateLimitModule {
 
     /// Seconds until at least one token is available again (>= 1).
     fn retry_after(&self, tokens: f64) -> u64 {
-        if self.refill_per_sec <= 0.0 {
+        if self.params.refill_per_sec <= 0.0 {
             return 1;
         }
-        ((1.0 - tokens) / self.refill_per_sec).ceil().max(1.0) as u64
-    }
-
-    /// Drop idle (fully refilled) buckets. A bucket whose elapsed time exceeds
-    /// the full-refill duration is back at capacity — indistinguishable from a
-    /// fresh key — so it is safe to evict.
-    fn sweep_full_buckets(&self, buckets: &mut HashMap<String, Bucket>, now: Instant) {
-        if self.refill_per_sec <= 0.0 {
-            return;
-        }
-        let full_refill = Duration::from_secs_f64(self.capacity / self.refill_per_sec);
-        buckets.retain(|_, b| now.duration_since(b.last) < full_refill);
+        ((1.0 - tokens) / self.params.refill_per_sec).ceil().max(1.0) as u64
     }
 }
+
+/// Default tracked-key cap used when constructing a test store via `with_clock`.
+/// Mirrors `RateLimitConfig`'s default; the authoritative cap reaching production
+/// comes from config through `RateLimitState::in_memory` at bind time.
+const DEFAULT_MAX_TRACKED_KEYS: usize = 100_000;
 
 impl WafModule for RateLimitModule {
     fn id(&self) -> &str {
@@ -180,13 +86,14 @@ impl WafModule for RateLimitModule {
     fn init(&mut self, cfg: &Config) {
         let rl = &cfg.rate_limit;
         self.enabled = rl.enabled;
-        self.capacity = rl.burst.unwrap_or(rl.requests).max(1) as f64;
         let window = rl.window_seconds.max(1) as f64;
-        self.refill_per_sec = rl.requests as f64 / window;
+        self.params = BucketParams {
+            capacity: rl.burst.unwrap_or(rl.requests).max(1) as f64,
+            refill_per_sec: rl.requests as f64 / window,
+        };
         self.action = rl.action;
         self.score = rl.score;
         self.key = rl.key;
-        self.max_tracked_keys = rl.max_tracked_keys.max(1);
     }
 
     fn inspect(&self, ctx: &RequestContext) -> Decision {
@@ -195,33 +102,13 @@ impl WafModule for RateLimitModule {
         }
 
         let key = self.key_for(ctx);
-        let now = self.clock.now();
 
-        let tokens_after = {
-            let mut state = self.state.0.lock().unwrap();
-
-            // Bound memory: before tracking a brand-new key at the cap, evict
-            // idle (fully refilled) buckets.
-            if !state.buckets.contains_key(&key) && state.buckets.len() >= self.max_tracked_keys {
-                self.sweep_full_buckets(&mut state.buckets, now);
-            }
-
-            let bucket = state.buckets.entry(key.clone()).or_insert(Bucket {
-                tokens: self.capacity,
-                last: now,
-            });
-
-            // Refill based on elapsed time.
-            let elapsed = now.duration_since(bucket.last).as_secs_f64();
-            bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
-            bucket.last = now;
-
-            if bucket.tokens >= 1.0 {
-                bucket.tokens -= 1.0;
-                return Decision::Allow;
-            }
-            bucket.tokens
-        };
+        // One atomic refill-then-consume against the (possibly distributed) store.
+        let outcome = self.state.try_acquire(&key, 1.0, self.params);
+        if outcome.allowed {
+            return Decision::Allow;
+        }
+        let tokens_after = outcome.tokens_remaining;
 
         // Over budget.
         match self.action {

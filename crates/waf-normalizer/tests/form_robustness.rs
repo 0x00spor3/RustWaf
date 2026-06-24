@@ -40,7 +40,9 @@ fn parse_form(body: &[u8], limits: &LimitsConfig) -> Result<Vec<(String, String)
 }
 
 fn limits(max_params: usize) -> LimitsConfig {
-    LimitsConfig { max_params, ..LimitsConfig::default() }
+    let mut l = LimitsConfig::default();
+    l.max_params = max_params;
+    l
 }
 
 proptest! {

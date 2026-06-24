@@ -26,7 +26,9 @@ use waf_normalizer::body::flatten_value;
 use waf_normalizer::NormalizationError;
 
 fn limits_depth(max_json_depth: usize) -> LimitsConfig {
-    LimitsConfig { max_json_depth, ..LimitsConfig::default() }
+    let mut l = LimitsConfig::default();
+    l.max_json_depth = max_json_depth;
+    l
 }
 
 /// `depth` nested arrays wrapping a Null leaf. flatten_json checks at depths 1..=depth

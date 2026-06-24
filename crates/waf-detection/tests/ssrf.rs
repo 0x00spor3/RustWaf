@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use waf_core::{
-    Bytes, Config, Decision, LimitsConfig, ModulesConfig, Normalized, ProxyConfig,
-    RequestContext, Severity, WafConfig, WafMode, WafModule,
+    Bytes, Config, Decision, LimitsConfig, Normalized,
+    RequestContext, Severity, WafMode, WafModule,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{Pipeline, PipelineVerdict};
@@ -18,24 +18,9 @@ fn base_config() -> Config {
 }
 
 fn config_with_paranoia(paranoia_level: u8) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode: WafMode::DetectionOnly,
-            block_threshold: 5,
-            paranoia_level,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.paranoia_level = paranoia_level;
+    c
 }
 
 fn scores_contains(d: &Decision, rule_id: &str) -> bool {

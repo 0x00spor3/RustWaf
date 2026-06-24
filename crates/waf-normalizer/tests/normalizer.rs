@@ -14,6 +14,13 @@ fn norm_with(limits: LimitsConfig) -> Normalizer {
     Normalizer::new(&limits)
 }
 
+/// `LimitsConfig` is `#[non_exhaustive]` (frozen ABI) → build from default + tweak.
+fn limits_with(f: impl FnOnce(&mut LimitsConfig)) -> LimitsConfig {
+    let mut l = LimitsConfig::default();
+    f(&mut l);
+    l
+}
+
 fn ctx(raw_path: &str) -> RequestContext {
     RequestContext {
         client_ip: "127.0.0.1".parse().unwrap(),
@@ -267,7 +274,7 @@ fn json_depth_exceeded_returns_error() {
     // 7 levels of nesting, max_depth = 5
     let body = format!("{}{}{}", "{\"a\":".repeat(7), "\"leaf\"", "}".repeat(7));
     let mut c = ctx_body("application/json", body.as_bytes());
-    let err = norm_with(LimitsConfig { max_json_depth: 5, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_json_depth = 5))
         .normalize(&mut c)
         .unwrap_err();
     assert!(matches!(err, NormalizationError::JsonDepthExceeded { limit: 5 }), "got: {:?}", err);
@@ -278,7 +285,7 @@ fn json_depth_at_limit_is_accepted() {
     // 5 levels, max_depth = 5 → should succeed
     let body = format!("{}{}{}", "{\"a\":".repeat(5), "\"leaf\"", "}".repeat(5));
     let mut c = ctx_body("application/json", body.as_bytes());
-    norm_with(LimitsConfig { max_json_depth: 5, ..LimitsConfig::default() })
+    norm_with(limits_with(|l| l.max_json_depth = 5))
         .normalize(&mut c)
         .unwrap();
 }
@@ -318,7 +325,7 @@ file content\r\n\
 fn body_too_large_returns_error() {
     let mut c = ctx("/");
     c.body = Bytes::from(vec![b'x'; 101]);
-    let err = norm_with(LimitsConfig { max_body_size: 100, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_body_size = 100))
         .normalize(&mut c)
         .unwrap_err();
     assert!(
@@ -331,7 +338,7 @@ fn body_too_large_returns_error() {
 fn too_many_headers_returns_error() {
     let mut c = ctx("/");
     c.headers = (0..101).map(|i| (format!("x-h-{i}"), "v".to_string())).collect();
-    let err = norm_with(LimitsConfig { max_headers: 100, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_headers = 100))
         .normalize(&mut c)
         .unwrap_err();
     assert!(matches!(err, NormalizationError::TooManyHeaders { limit: 100 }), "got: {:?}", err);
@@ -341,7 +348,7 @@ fn too_many_headers_returns_error() {
 fn header_value_too_large_returns_error() {
     let mut c = ctx("/");
     c.headers = vec![("x-big".to_string(), "x".repeat(101))];
-    let err = norm_with(LimitsConfig { max_header_size: 100, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_header_size = 100))
         .normalize(&mut c)
         .unwrap_err();
     assert!(
@@ -354,7 +361,7 @@ fn header_value_too_large_returns_error() {
 fn too_many_query_params_returns_error() {
     let query = (0..11).map(|i| format!("k{i}=v{i}")).collect::<Vec<_>>().join("&");
     let mut c = ctx_query("/", &query);
-    let err = norm_with(LimitsConfig { max_params: 10, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_params = 10))
         .normalize(&mut c)
         .unwrap_err();
     assert!(matches!(err, NormalizationError::TooManyParams { limit: 10 }), "got: {:?}", err);
@@ -364,7 +371,7 @@ fn too_many_query_params_returns_error() {
 fn too_many_form_params_returns_error() {
     let body = (0..11).map(|i| format!("k{i}=v{i}")).collect::<Vec<_>>().join("&");
     let mut c = ctx_body("application/x-www-form-urlencoded", body.as_bytes());
-    let err = norm_with(LimitsConfig { max_params: 10, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_params = 10))
         .normalize(&mut c)
         .unwrap_err();
     assert!(matches!(err, NormalizationError::TooManyParams { limit: 10 }), "got: {:?}", err);
@@ -375,7 +382,7 @@ fn too_many_cookies_returns_error() {
     let cookie_hdr = (0..6).map(|i| format!("c{i}=v{i}")).collect::<Vec<_>>().join("; ");
     let mut c = ctx("/");
     c.headers = vec![("cookie".to_string(), cookie_hdr)];
-    let err = norm_with(LimitsConfig { max_cookies: 5, ..LimitsConfig::default() })
+    let err = norm_with(limits_with(|l| l.max_cookies = 5))
         .normalize(&mut c)
         .unwrap_err();
     assert!(matches!(err, NormalizationError::TooManyCookies { limit: 5 }), "got: {:?}", err);

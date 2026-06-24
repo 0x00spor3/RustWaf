@@ -133,24 +133,54 @@ For every enterprise feature, the core defines the **trait** (extension point);
 the enterprise provides the **at-scale implementation**.
 
 ```rust
-// in waf-core (OPEN)
+// in waf-core (OPEN) — A0 decision (2026-06-24): a single ATOMIC operation, not a
+// get/update pair. Refill-then-consume must be indivisible across callers, else two
+// nodes read the same bucket level and both allow (cluster-wide over-allow / TOCTOU).
+// In-memory enforces it under one lock; a Redis impl uses one server-side script.
+// Time and memory-bounding are the store's concern (in-memory owns a clock + a
+// tracked-key cap; Redis uses server time + TTL), so they stay out of the ABI.
+pub struct BucketParams { pub capacity: f64, pub refill_per_sec: f64 }
+pub struct Acquired { pub allowed: bool, pub tokens_remaining: f64 }
+
 pub trait StateStore: Send + Sync {
-    fn get_bucket(&self, key: &str) -> Option<Bucket>;
-    fn update_bucket(&self, key: &str, b: Bucket);
-    fn sweep_idle(&self);
+    fn try_acquire(&self, key: &str, cost: f64, params: BucketParams) -> Acquired;
 }
-// in-memory impl -> OPEN        (waf-state)
+// in-memory impl -> OPEN        (InMemoryStateStore)
 // Redis impl      -> ENTERPRISE (waf-state-redis)
 ```
 
-The same scheme is replicated for reputation/feed and the other extension points.
+Future cluster-wide state (e.g. IP-reputation, §2.1) is added as a new trait method
+with a default impl (non-breaking), not a separate get/update KV.
+
+The impl is **injected without forking** through the stable embedding builder
+(A2, 2026-06-24) — every seam has a default, so an empty builder equals `Proxy::bind`:
+
+```rust
+// enterprise crate, depending on the published core as a LIBRARY:
+let proxy = Proxy::builder(&config)
+    .state_store(Arc::new(RedisStore::connect(&url)?)) // ENTERPRISE impl of StateStore
+    .cert_source(Arc::new(AcmeCertSource::new(..)))     // ENTERPRISE impl of TlsCertSource
+    .modules(premium_modules)                          // extra WafModule set
+    .build()
+    .await?;
+```
 
 ---
 
 ## 5. Boundary stability policy
 
-The `WafModule` and `StateStore` traits are **public ABI**: SemVer, frozen
-before the first public release.
+The `WafModule`, `StateStore` and `TlsCertSource` traits are **public ABI**: SemVer,
+frozen before the first public release.
+
+**Config evolution (A4, 2026-06-24).** `Config` is `#[non_exhaustive]`: adding a future
+top-level section (as `tls` was added) is **non-breaking** — external code cannot use a
+`Config { .. }` literal, it builds from `Config::default()`/TOML and mutates, so a new
+field is absorbed. This protects the whole config tree transitively, *except* the
+sub-configs ALSO taken by-value by a public fn (`TlsConfig` → `acceptor_from_*`,
+`NetworkConfig` → `ClientIpResolver::from_config`, `LimitsConfig` → `Normalizer::new`),
+which are marked `#[non_exhaustive]` individually. The remaining sub-configs stay
+literal-constructible (reached only through `config.field`). Marking a struct
+`#[non_exhaustive]` later is itself breaking, so this set is part of the freeze.
 
 A feature labeled `OPEN` **cannot** be moved to `ENTERPRISE` retroactively after a
 release. The only permitted move is `ENTERPRISE → OPEN`.

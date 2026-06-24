@@ -16,8 +16,8 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpListener;
 use waf_core::{
-    Config, Decision, FailMode, LimitsConfig, ModulesConfig, NetworkConfig, Phase, ProxyConfig,
-    RateLimitAction, RateLimitConfig, RateLimitKey, RequestContext, WafConfig, WafMode, WafModule,
+    Acquired, BucketParams, Config, Decision, FailMode,
+    Phase, RateLimitAction, RateLimitConfig, RateLimitKey, RequestContext, StateStore, WafMode, WafModule,
 };
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -96,24 +96,10 @@ async fn start_echo_backend() -> std::net::SocketAddr {
 }
 
 fn make_config(backend_addr: std::net::SocketAddr) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            backend: format!("http://{backend_addr}"),
-        },
-        waf: WafConfig {
-            mode: WafMode::DetectionOnly,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.proxy.listen = "127.0.0.1:0".parse().unwrap();
+    c.proxy.backend = format!("http://{backend_addr}");
+    c
 }
 
 /// Blocking-mode config with rate limiting at `requests` per 60s, burst = requests.
@@ -131,6 +117,49 @@ fn make_config_rate_limited(backend_addr: std::net::SocketAddr, requests: u32) -
         max_tracked_keys: 1000,
     };
     cfg
+}
+
+/// A `StateStore` that records calls and always denies. Proves an injected store
+/// reaches the datapath: the default in-memory store (generous budget) would allow
+/// the first request, so a 429 can only come from this store.
+struct DenyAllStore {
+    calls: Arc<AtomicUsize>,
+}
+
+impl StateStore for DenyAllStore {
+    fn try_acquire(&self, _key: &str, _cost: f64, _params: BucketParams) -> Acquired {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Acquired { allowed: false, tokens_remaining: 0.0 }
+    }
+}
+
+#[tokio::test]
+async fn injected_state_store_governs_rate_limit_decision() {
+    let backend = start_echo_backend().await;
+    // Generous budget (100): the DEFAULT in-memory store would allow this request.
+    let cfg = make_config_rate_limited(backend, 100);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(DenyAllStore { calls: calls.clone() });
+
+    let proxy = Proxy::builder(&cfg).state_store(store).build().await.unwrap();
+    let proxy_addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+
+    let client = test_client();
+    let resp = client
+        .request(
+            Request::builder()
+                .method("GET")
+                .uri(format!("http://{proxy_addr}/x"))
+                .body(empty_body())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The injected deny-store forces 429 where the default would have allowed (200).
+    assert_eq!(resp.status(), 429, "injected store must govern the rate-limit decision");
+    assert!(calls.load(Ordering::Relaxed) >= 1, "injected store must be consulted on the datapath");
 }
 
 #[tokio::test]
@@ -168,11 +197,9 @@ async fn distinct_clients_behind_same_lb_get_separate_buckets() {
     // they no longer collide in one rate-limit bucket.
     let backend = start_echo_backend().await;
     let mut cfg = make_config_rate_limited(backend, 1); // burst = 1 per key
-    cfg.network = NetworkConfig {
-        trusted_proxies: vec!["127.0.0.1".to_string()],
-        client_ip_header: "x-forwarded-for".to_string(),
-        trusted_hops: 1,
-    };
+    cfg.network.trusted_proxies = vec!["127.0.0.1".to_string()];
+    cfg.network.client_ip_header = "x-forwarded-for".to_string();
+    cfg.network.trusted_hops = 1;
     let proxy = Proxy::bind(&cfg).await.unwrap();
     let proxy_addr = proxy.local_addr().unwrap();
     tokio::spawn(proxy.run());

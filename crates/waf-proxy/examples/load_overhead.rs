@@ -46,8 +46,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpListener;
 use waf_core::{
-    Config, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig, RateLimitConfig,
-    WafConfig, WafMode,
+    Config, WafMode,
 };
 use waf_proxy::Proxy;
 
@@ -90,19 +89,12 @@ async fn start_echo() -> SocketAddr {
 }
 
 fn cfg(backend: SocketAddr, mode: WafMode) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            backend: format!("http://{backend}"),
-        },
-        waf: WafConfig { mode, block_threshold: 5, paranoia_level: 3, severity_scores: Default::default() },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: RateLimitConfig::default(),
-        network: NetworkConfig::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.proxy.listen = "127.0.0.1:0".parse().unwrap();
+    c.proxy.backend = format!("http://{backend}");
+    c.waf.mode = mode;
+    c.waf.paranoia_level = 3;
+    c
 }
 
 async fn one_status(client: &Client<HttpConnector, ReqBody>, addr: SocketAddr, query: &str) -> u16 {

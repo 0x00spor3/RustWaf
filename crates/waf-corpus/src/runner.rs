@@ -19,9 +19,7 @@
 
 use waf_core::testkit::Request;
 use waf_core::{
-    Config, GraphqlConfig, GrpcConfig, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig,
-    RateLimitConfig, RequestContext, ResilienceConfig, ScoreContribution, SeverityScores,
-    WafConfig, WafMode, WafModule,
+    Config, GraphqlConfig, GrpcConfig, RequestContext, ScoreContribution, SeverityScores, WafMode, WafModule,
 };
 use waf_detection::ContentPrefilter;
 use waf_detection::graphql::GraphqlModule;
@@ -363,33 +361,19 @@ pub fn prepared_ctx(field: &Field, pl: u8, severity: SeverityScores) -> Option<R
 /// the only scoring knob the caller varies; the threshold stays at MAX so the run
 /// captures the full uncut score regardless of the candidate threshold.
 fn corpus_config(paranoia: u8, severity: SeverityScores) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().expect("valid loopback addr"),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode: WafMode::Blocking,
-            // Never let the anomaly threshold short-circuit inspection: we want
-            // every matched rule + the full cumulative score for every case.
-            block_threshold: u32::MAX,
-            paranoia_level: paranoia,
-            severity_scores: severity,
-        },
-        limits: LimitsConfig::default(),
-        // All modules enabled. GraphQL and gRPC are OFF in production by default (opt-in),
-        // so the corpus harness turns them ON (graphql with introspection-blocking) to
-        // exercise the structural cases; default caps apply.
-        modules: ModulesConfig {
-            graphql: GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() },
-            grpc: GrpcConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        },
-        rate_limit: RateLimitConfig::default(), // enabled = false → neutralized
-        network: NetworkConfig::default(),
-        resilience: ResilienceConfig::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = WafMode::Blocking;
+    // Never let the anomaly threshold short-circuit inspection: we want every matched
+    // rule + the full cumulative score for every case.
+    c.waf.block_threshold = u32::MAX;
+    c.waf.paranoia_level = paranoia;
+    c.waf.severity_scores = severity;
+    // All modules enabled. GraphQL and gRPC are OFF in production by default (opt-in),
+    // so the corpus harness turns them ON (graphql with introspection-blocking) to
+    // exercise the structural cases; default caps apply.
+    c.modules.graphql = GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() };
+    c.modules.grpc = GrpcConfig { enabled: true, ..Default::default() };
+    c
 }
 
 

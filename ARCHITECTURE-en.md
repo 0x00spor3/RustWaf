@@ -56,6 +56,37 @@ the following non-functional requirements:
             └─────────────────────────────────────────────┘
 ```
 
+### Extension surface (open-core embedding)
+
+The core is published on crates.io as a **library**; an enterprise tier **depends** on the published
+crates and **implements the traits**, with no fork (`BOUNDARY.md` §4). The injection points are
+exposed by a **stable** builder — every seam has a default, so a builder with no overrides equals
+`Proxy::bind`:
+
+```rust
+let proxy = Proxy::builder(&config)
+    .state_store(Arc::new(my_store))    // Arc<dyn StateStore>   — default: in-memory token bucket
+    .cert_source(Arc::new(my_certs))    // Arc<dyn TlsCertSource> — default: FileCertSource (PEM)
+    .modules(extra_modules)             // Vec<Box<dyn WafModule>> — extra, after the built-ins
+    .build().await?;
+```
+
+The three OPEN→ENTERPRISE seams:
+- **`StateStore`** (`waf-core::state`) — rate-limit state (and future IP-reputation). The contract is
+  **one atomic operation** `try_acquire(key, cost, params) -> Acquired`, **not** get/update:
+  refill-then-consume must be indivisible, else two nodes read the same bucket and both allow
+  (cluster-wide over-allow / TOCTOU). In-memory enforces it under one lock; Redis with a server-side
+  script. Clock and memory cap are **internal** to the store (out of the ABI). OPEN impl =
+  `InMemoryStateStore`; Redis = ENTERPRISE.
+- **`TlsCertSource`** (`waf-proxy::tls`) — certificate provenance. OPEN impl = `FileCertSource`;
+  ACME/rotation/mTLS-PKI = ENTERPRISE. `[tls].enabled`/`alpn` still come from config.
+- **`WafModule`** — additional detection modules (premium = ENTERPRISE).
+
+**ABI freeze (pre-publish §5)**: the three traits are **public ABI** frozen via SemVer. `Config` is
+`#[non_exhaustive]` → adding a future top-level section is **additive, non-breaking** (external code
+builds from `Config::default()`/TOML, not a literal). Same for the sub-configs taken by-value by a
+public fn (`TlsConfig`, `NetworkConfig`, `LimitsConfig`); the rest are protected transitively.
+
 ---
 
 ## 4. Phased pipeline (hook chain)
@@ -719,7 +750,7 @@ Reload of the config at runtime **without a restart** and **without dropping con
 
 | NOT reset (process-lifetime) | Rebuilt in the swap |
 |---|---|
-| **rate-limit token bucket** (`RateLimitState` shared, re-injected) | rules/regex, paranoia filter, thresholds/severities |
+| **rate-limit token bucket** (`StateStore` behind `RateLimitState`, re-injected; default in-memory, override `Proxy::builder().state_store(..)`) | rules/regex, paranoia filter, thresholds/severities |
 | hyper connection pool (`client`) | rate-limit parameters (capacity/refill/action) |
 | in-flight connections/requests | `trusted_proxies` CIDR resolver, resilience policy |
 | `request_id` counter | limits, `backend` |
@@ -780,7 +811,10 @@ single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cer
   an h1-only client (it does not force h2). Prerequisite for gRPC-over-TLS (next phase).
 - **§4 seam (`waf-proxy::tls`)**: `trait TlsCertSource` with the OPEN impl `FileCertSource` (PEM).
   ACME/rotation/multi-node certs / **mTLS with managed PKI** are ENTERPRISE impls of the same trait
-  (mTLS is explicitly outside the core, `BOUNDARY.md` §3.2).
+  (mTLS is explicitly outside the core, `BOUNDARY.md` §3.2). **Injection**:
+  `Proxy::builder().cert_source(..)` (default `FileCertSource` from config paths); `acceptor_from_source`
+  picks the injected source vs the file. `[tls].enabled`/`alpn` stay in config — the source governs only
+  the cert *provenance*.
 - **No silent downgrade (fail-closed)**: with TLS enabled the listener serves **only** TLS. The
   acceptor is built at `bind` and is **immutable** (not hot-reloadable, like `listen_addr` =
   restart-required): there is no runtime path that downgrades to cleartext. `enabled=true` + an

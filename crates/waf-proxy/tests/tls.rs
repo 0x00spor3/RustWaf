@@ -31,9 +31,13 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
 use waf_core::{
-    Config, LimitsConfig, ModulesConfig, ProxyConfig, TlsConfig, WafConfig, WafMode,
+    Config, TlsConfig, WafMode,
 };
-use waf_proxy::tls::{acceptor_from_config, build_server_config, FileCertSource};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use waf_proxy::tls::{
+    acceptor_from_config, build_server_config, FileCertSource, TlsCertSource, TlsError, TlsMaterial,
+};
 use waf_proxy::Proxy;
 
 type TestBody = BoxBody<Bytes, hyper::Error>;
@@ -89,34 +93,19 @@ async fn start_echo_backend() -> std::net::SocketAddr {
 }
 
 fn base_config(backend: std::net::SocketAddr) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            backend: format!("http://{backend}"),
-        },
-        waf: WafConfig {
-            mode: WafMode::Blocking,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.proxy.listen = "127.0.0.1:0".parse().unwrap();
+    c.proxy.backend = format!("http://{backend}");
+    c.waf.mode = WafMode::Blocking;
+    c
 }
 
 fn tls_config(backend: std::net::SocketAddr, cert: &Path, key: &Path) -> Config {
     let mut c = base_config(backend);
-    c.tls = TlsConfig {
-        enabled: true,
-        cert_path: cert.to_string_lossy().into_owned(),
-        key_path: key.to_string_lossy().into_owned(),
-        alpn: vec!["h2".to_string(), "http/1.1".to_string()],
-    };
+    c.tls.enabled = true;
+    c.tls.cert_path = cert.to_string_lossy().into_owned();
+    c.tls.key_path = key.to_string_lossy().into_owned();
+    c.tls.alpn = vec!["h2".to_string(), "http/1.1".to_string()];
     c
 }
 
@@ -269,6 +258,54 @@ async fn h2c_cleartext_served_when_tls_off() {
     assert_eq!(resp.status(), 200);
 }
 
+// ── injected cert source (A3 seam, end-to-end) ──────────────────────────────────
+
+/// A `TlsCertSource` that counts loads and delegates to an inner file source. Proves
+/// an injected source reaches the datapath and overrides config cert paths.
+struct CountingCertSource {
+    inner: FileCertSource,
+    loads: Arc<AtomicUsize>,
+}
+
+impl TlsCertSource for CountingCertSource {
+    fn load(&self) -> Result<TlsMaterial, TlsError> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        self.inner.load()
+    }
+}
+
+#[tokio::test]
+async fn injected_cert_source_overrides_file_config() {
+    let backend = start_echo_backend().await;
+    // Real cert material the injected source will serve from.
+    let (cert_path, key_path, der) = cert_fixture();
+
+    // Config enables TLS but points at NONEXISTENT files: the default FileCertSource
+    // would fail the bind. ALPN still comes from config.
+    let mut cfg = base_config(backend);
+    cfg.tls.enabled = true;
+    cfg.tls.cert_path = "/no/such/cert.pem".to_string();
+    cfg.tls.key_path = "/no/such/key.pem".to_string();
+    cfg.tls.alpn = vec!["h2".to_string(), "http/1.1".to_string()];
+
+    let loads = Arc::new(AtomicUsize::new(0));
+    let source = Arc::new(CountingCertSource {
+        inner: FileCertSource::new(&cert_path, &key_path),
+        loads: loads.clone(),
+    });
+
+    // With the default source this bind would FAIL (broken paths); the injection saves it.
+    let proxy = Proxy::builder(&cfg).cert_source(source).build().await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+
+    let (alpn, status) = tls_get(addr, Some(der), &[b"h2"], "/hello").await.unwrap();
+    assert_eq!(alpn, b"h2", "must negotiate h2 via the injected source");
+    assert_eq!(status, 200, "TLS must terminate from the injected source, not the broken file config");
+    assert!(loads.load(Ordering::Relaxed) >= 1, "injected cert source must be consulted on the datapath");
+    cleanup(cert_path, key_path);
+}
+
 // ── unit: the cert seam ─────────────────────────────────────────────────────────
 
 #[test]
@@ -279,12 +316,11 @@ fn acceptor_disabled_is_none() {
 #[test]
 fn acceptor_missing_cert_file_is_fatal_error() {
     // enabled + unreadable cert → Err (fail-closed boot, no cleartext fallback).
-    let tls = TlsConfig {
-        enabled: true,
-        cert_path: "/no/such/cert.pem".to_string(),
-        key_path: "/no/such/key.pem".to_string(),
-        alpn: vec!["h2".to_string()],
-    };
+    let mut tls = TlsConfig::default();
+    tls.enabled = true;
+    tls.cert_path = "/no/such/cert.pem".to_string();
+    tls.key_path = "/no/such/key.pem".to_string();
+    tls.alpn = vec!["h2".to_string()];
     assert!(acceptor_from_config(&tls).is_err());
 }
 

@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use waf_core::{
-    Bytes, Config, Decision, LimitsConfig, ModulesConfig, Normalized, Phase, ProxyConfig,
-    RequestContext, ScoreItem, Severity, SeverityScores, WafConfig, WafMode, WafModule,
+    Bytes, Config, Decision, Normalized, Phase,
+    RequestContext, ScoreItem, Severity, SeverityScores, WafMode, WafModule,
 };
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
@@ -57,24 +57,11 @@ fn cfg(mode: WafMode, threshold: u32) -> Config {
 }
 
 fn cfg_full(mode: WafMode, threshold: u32, severity_scores: SeverityScores) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode,
-            block_threshold: threshold,
-            paranoia_level: 1,
-            severity_scores,
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(),
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = mode;
+    c.waf.block_threshold = threshold;
+    c.waf.severity_scores = severity_scores;
+    c
 }
 
 /// A module whose `inspect` always panics — exercises Pillar-2 panic isolation.

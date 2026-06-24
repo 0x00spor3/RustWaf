@@ -7,8 +7,8 @@
 //! module's job and is tested elsewhere.
 
 use waf_core::{
-    Bytes, CompressedPolicy, Config, Decision, GrpcConfig, LimitsConfig, ModulesConfig, Normalized,
-    ParsedBody, ProxyConfig, RequestContext, WafConfig, WafMode, WafModule,
+    Bytes, CompressedPolicy, Config, Decision, GrpcConfig, LimitsConfig, Normalized,
+    ParsedBody, RequestContext, WafMode, WafModule,
 };
 
 use waf_detection::grpc::GrpcModule;
@@ -69,24 +69,10 @@ fn nested(depth: u32) -> Vec<u8> {
 // ── harness ─────────────────────────────────────────────────────────────────────
 
 fn config(grpc: GrpcConfig) -> Config {
-    Config {
-        proxy: ProxyConfig {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            backend: "http://localhost:3000".to_string(),
-        },
-        waf: WafConfig {
-            mode: WafMode::Blocking,
-            block_threshold: 5,
-            paranoia_level: 1,
-            severity_scores: Default::default(),
-        },
-        limits: LimitsConfig::default(),
-        modules: ModulesConfig { grpc, ..Default::default() },
-        rate_limit: Default::default(),
-        network: Default::default(),
-        resilience: Default::default(),
-        tls: Default::default(),
-    }
+    let mut c = Config::default();
+    c.waf.mode = WafMode::Blocking;
+    c.modules.grpc = grpc;
+    c
 }
 
 fn module(grpc: GrpcConfig) -> GrpcModule {

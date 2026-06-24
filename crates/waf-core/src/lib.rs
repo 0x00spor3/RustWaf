@@ -11,6 +11,12 @@ pub use bytes::Bytes;
 pub mod network;
 pub use network::{ClientIpResolver, IpSource, ResolvedClientIp};
 
+pub mod state;
+pub use state::{
+    Acquired, BucketParams, Clock, InMemoryStateStore, ManualClock, RateLimitState, StateStore,
+    SystemClock,
+};
+
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
@@ -88,7 +94,15 @@ pub trait WafModule: Send + Sync {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// `#[non_exhaustive]`: adding a future top-level section (as `tls` was added) must not
+// break external constructors. Cross-crate code can no longer use a `Config { .. }` literal
+// — it builds from `Config::default()` (or TOML) and mutates — so any new field is absorbed
+// by the default. This protects the whole tree transitively: every sub-config is reached
+// through a default/deserialized `Config`. The few sub-configs ALSO taken by-value in a
+// public fn (`TlsConfig`, `NetworkConfig`, `LimitsConfig`) are marked `#[non_exhaustive]`
+// individually; the rest stay literal-constructible.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct Config {
     pub proxy: ProxyConfig,
     pub waf: WafConfig,
@@ -112,13 +126,36 @@ pub struct Config {
     pub tls: TlsConfig,
 }
 
+impl Default for Config {
+    /// A valid, non-disruptive base for programmatic/test construction: detection-only,
+    /// all detection modules off, rate limiting off, cleartext. Production always supplies
+    /// `[proxy]`/`[waf]` from TOML; this default exists so external code never needs a
+    /// `Config { .. }` literal (forbidden by `#[non_exhaustive]`).
+    fn default() -> Self {
+        Self {
+            proxy: ProxyConfig::default(),
+            waf: WafConfig::default(),
+            limits: LimitsConfig::default(),
+            modules: ModulesConfig::default(),
+            rate_limit: RateLimitConfig::default(),
+            network: NetworkConfig::default(),
+            resilience: ResilienceConfig::default(),
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
 // ── TLS termination (Phase 12) ─────────────────────────────────────────────────
 
 /// Inbound TLS termination configuration. **Basic termination, cert from file** is the
 /// OPEN core surface (`BOUNDARY.md` §3.2): single-node self-sufficiency. ACME/rotation/
 /// multi-node certs / mTLS-with-managed-PKI are ENTERPRISE and plug in behind the
 /// `TlsCertSource` seam (see `waf-proxy::tls`).
+// `#[non_exhaustive]`: `TlsConfig` is taken by-value by public fns (`acceptor_from_config`/
+// `acceptor_from_source` in waf-proxy::tls), so it escapes the transitive protection of a
+// non-exhaustive `Config` — external callers must build it from `TlsConfig::default()`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct TlsConfig {
     /// Default OFF: the listener serves cleartext (h1 + h2c). When on, the listener
     /// serves ONLY TLS — there is **no cleartext fallback** on the same port (a required
@@ -223,7 +260,9 @@ impl ResilienceConfig {
 
 /// Trusted-proxy configuration for resolving the real client IP behind an
 /// LB/CDN/TLS-terminator. See `network::ClientIpResolver` for the logic.
+// `#[non_exhaustive]`: taken by-value by the public `ClientIpResolver::from_config`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct NetworkConfig {
     /// CIDR blocks of YOUR proxies (IPv4 or IPv6). Empty (default) = fail-safe:
     /// the forwarded header is ALWAYS ignored and the peer address is used.
@@ -770,6 +809,30 @@ fn default_paranoia_level() -> u8 {
     1
 }
 
+impl Default for ProxyConfig {
+    /// Loopback placeholder for programmatic/test construction; production supplies
+    /// `[proxy]` from TOML.
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:8080".parse().expect("valid loopback addr"),
+            backend: "http://localhost:8080".to_string(),
+        }
+    }
+}
+
+impl Default for WafConfig {
+    /// Detection-only, default thresholds — a non-disruptive base (never blocks until
+    /// explicitly switched to `Blocking`).
+    fn default() -> Self {
+        Self {
+            mode: WafMode::DetectionOnly,
+            block_threshold: default_block_threshold(),
+            paranoia_level: default_paranoia_level(),
+            severity_scores: SeverityScores::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WafMode {
@@ -777,7 +840,9 @@ pub enum WafMode {
     Blocking,
 }
 
+// `#[non_exhaustive]`: taken by-value by the public `Normalizer::new(&LimitsConfig)`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct LimitsConfig {
     #[serde(default = "default_max_body_size")]
     pub max_body_size: usize,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod config;
+pub mod metrics;
 pub mod tls;
 
 use std::convert::Infallible;
@@ -11,7 +12,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
@@ -25,6 +26,7 @@ use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
+use crate::metrics::{Metrics, Outcome};
 use tls::TlsCertSource;
 use tracing::{error, info, warn};
 
@@ -241,6 +243,9 @@ struct StaticState {
     /// by ALPN); `None` ⇒ cleartext (h1 + h2c). Built once at bind; a required-but-broken
     /// cert fails the bind, so there is no runtime path that downgrades to cleartext.
     tls_acceptor: Option<TlsAcceptor>,
+    /// Process-lifetime metrics (B1). Survives reloads like the rate-limit store. Recorded
+    /// once per request in `handle`; served by the metrics task (`Proxy::metrics_listener`).
+    metrics: Arc<Metrics>,
 }
 
 /// Which request handler the accept loop dispatches to. `Inspect` is the ONLY mode a
@@ -342,7 +347,7 @@ fn upstream_error_response(
 fn deny_response(
     ctx: &RequestContext,
     verdict: PipelineVerdict,
-) -> Option<Response<HyperBoxBody>> {
+) -> Option<(Response<HyperBoxBody>, Outcome)> {
     match verdict {
         PipelineVerdict::Allow => None,
         PipelineVerdict::Block { rule_id, reason } => {
@@ -353,12 +358,13 @@ fn deny_response(
                 score = ctx.score,
                 "request blocked"
             );
-            Some(
+            Some((
                 Response::builder()
                     .status(403)
                     .body(full_body("Forbidden"))
                     .unwrap(),
-            )
+                Outcome::Blocked,
+            ))
         }
         PipelineVerdict::Reject { rule_id, reason, status, retry_after } => {
             warn!(
@@ -368,18 +374,18 @@ fn deny_response(
                 status = status,
                 "request rejected"
             );
-            // Reason phrase by status: 429 rate-limit, 400 illegal framing
+            // Reason phrase + metric outcome by status: 429 rate-limit, 400 illegal framing
             // (request smuggling). Block (403 detection) is a separate arm above.
-            let body = match status {
-                429 => "Too Many Requests",
-                400 => "Bad Request",
-                _ => "Rejected",
+            let (body, outcome) = match status {
+                429 => ("Too Many Requests", Outcome::RateLimited),
+                400 => ("Bad Request", Outcome::BadRequest),
+                _ => ("Rejected", Outcome::BadRequest),
             };
             let mut builder = Response::builder().status(status);
             if let Some(secs) = retry_after {
                 builder = builder.header("retry-after", secs.to_string());
             }
-            Some(builder.body(full_body(body)).unwrap())
+            Some((builder.body(full_body(body)).unwrap(), outcome))
         }
     }
 }
@@ -388,7 +394,7 @@ async fn try_forward(
     req: Request<Incoming>,
     state: &StaticState,
     client_addr: SocketAddr,
-) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Response<HyperBoxBody>, Outcome), Box<dyn std::error::Error + Send + Sync>> {
     // Load the current config snapshot ONCE per request (atomic): the whole
     // request runs against this `Reloadable`, immune to a concurrent reload.
     let rel = state.current();
@@ -403,8 +409,8 @@ async fn try_forward(
     // Connection-phase modules (rate limiting) run BEFORE normalization, so
     // flood traffic is rejected without paying for Fase 2 parsing.
     let connection_verdict = rel.pipeline.run_connection(&mut ctx);
-    if let Some(resp) = deny_response(&ctx, connection_verdict) {
-        return Ok(resp);
+    if let Some(denied) = deny_response(&ctx, connection_verdict) {
+        return Ok(denied);
     }
 
     // Parser-limit policy (Fase 6 / Pillar 2): on a normalization failure
@@ -420,10 +426,13 @@ async fn try_forward(
                     policy = ?FailMode::FailClosed,
                     "normalization failed: rejecting (on_parser_limit)"
                 );
-                return Ok(Response::builder()
-                    .status(400)
-                    .body(full_body("Bad Request"))
-                    .unwrap());
+                return Ok((
+                    Response::builder()
+                        .status(400)
+                        .body(full_body("Bad Request"))
+                        .unwrap(),
+                    Outcome::BadRequest,
+                ));
             }
             FailMode::FailOpen => {
                 warn!(
@@ -462,8 +471,8 @@ async fn try_forward(
         // equivalence is proven on the corpus oracle through this same gate.
         let inspect = rel.prefilter.is_candidate(&ctx);
         let inspection_verdict = rel.pipeline.run_inspection_gated(&mut ctx, inspect);
-        if let Some(resp) = deny_response(&ctx, inspection_verdict) {
-            return Ok(resp);
+        if let Some(denied) = deny_response(&ctx, inspection_verdict) {
+            return Ok(denied);
         }
     }
 
@@ -488,7 +497,7 @@ async fn forward_to_backend(
     req_trailers: Option<HeaderMap>,
     client_addr: SocketAddr,
     ctx: &RequestContext,
-) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Response<HyperBoxBody>, Outcome), Box<dyn std::error::Error + Send + Sync>> {
     let backend_uri: Uri = format!("{}{}", rel.backend, path_and_query).parse()?;
     let is_grpc = is_grpc_request(parts);
 
@@ -535,9 +544,17 @@ async fn forward_to_backend(
 
     let (resp_parts, resp_bytes, resp_trailers) = match upstream {
         Ok(Ok(triple)) => triple,
-        Ok(Err(e)) => return Ok(upstream_error_response(ctx, &rel.resilience, &e.to_string())),
+        Ok(Err(e)) => {
+            return Ok((
+                upstream_error_response(ctx, &rel.resilience, &e.to_string()),
+                Outcome::UpstreamError,
+            ))
+        }
         Err(_elapsed) => {
-            return Ok(upstream_error_response(ctx, &rel.resilience, "upstream timeout"))
+            return Ok((
+                upstream_error_response(ctx, &rel.resilience, "upstream timeout"),
+                Outcome::UpstreamError,
+            ))
         }
     };
 
@@ -548,7 +565,10 @@ async fn forward_to_backend(
         "← response"
     );
 
-    Ok(Response::from_parts(resp_parts, body_with_trailers(resp_bytes, resp_trailers)))
+    Ok((
+        Response::from_parts(resp_parts, body_with_trailers(resp_bytes, resp_trailers)),
+        Outcome::Allowed,
+    ))
 }
 
 /// `#[doc(hidden)]` passthrough seam: build the context and forward, SKIPPING the
@@ -561,7 +581,7 @@ async fn try_passthrough(
     req: Request<Incoming>,
     state: &StaticState,
     client_addr: SocketAddr,
-) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Response<HyperBoxBody>, Outcome), Box<dyn std::error::Error + Send + Sync>> {
     let rel = state.current();
     let (parts, body) = req.into_parts();
     let (body_bytes, req_trailers) = collect_with_trailers(body).await?;
@@ -582,25 +602,36 @@ async fn handle(
 ) -> Result<Response<HyperBoxBody>, Infallible> {
     // Dispatch on the (config-unreachable) handler mode. `Inspect` is production; the
     // `try_forward` decision path is unchanged. `Passthrough` is the bench seam.
+    let start = Instant::now();
     let result = match state.mode {
         HandlerMode::Inspect => try_forward(req, &state, client_addr).await,
         HandlerMode::Passthrough => try_passthrough(req, &state, client_addr).await,
     };
-    match result {
-        Ok(resp) => Ok(resp),
+    // Single recording point (pure side effect): the inner path classifies the Outcome;
+    // an unexpected error here is the WAF's OWN failure → `internal_error`, distinct from the
+    // structured upstream 502/503 already classified inside `forward_to_backend`.
+    let (resp, outcome) = match result {
+        Ok((resp, outcome)) => (resp, outcome),
         Err(e) => {
             error!(error = %e, client_ip = %client_addr.ip(), "forwarding error");
-            Ok(Response::builder()
+            let resp = Response::builder()
                 .status(502)
                 .body(full_body("Bad Gateway"))
-                .unwrap())
+                .unwrap();
+            (resp, Outcome::InternalError)
         }
-    }
+    };
+    state.metrics.record(outcome, start.elapsed());
+    Ok(resp)
 }
 
 pub struct Proxy {
     listener: TcpListener,
     state: Arc<StaticState>,
+    /// Dedicated `/metrics` listener (`Some` ⇒ `[metrics].enabled`). Bound at `bind` for
+    /// fail-fast; the server task is spawned by `run`. NEVER the data port (serving internal
+    /// posture there would be an info leak and would be inspected by the WAF itself).
+    metrics_listener: Option<TcpListener>,
 }
 
 /// Build the enabled built-in modules from config. The rate limiter is given the
@@ -786,6 +817,18 @@ impl Proxy {
             .unwrap_or_else(|| RateLimitState::in_memory(config.rate_limit.max_tracked_keys));
         let reloadable = build_reloadable(config, rl_state.clone(), extra);
 
+        // Metrics (B1): a dedicated `/metrics` listener bound here for fail-fast (a busy
+        // port is a boot error, never a silent miss). Loopback by default; NEVER the data
+        // port. Counters live process-wide and survive reloads.
+        let metrics = Arc::new(Metrics::new());
+        let metrics_listener = if config.metrics.enabled {
+            let l = TcpListener::bind(config.metrics.listen).await?;
+            info!(listen = %l.local_addr()?, "metrics endpoint enabled (/metrics)");
+            Some(l)
+        } else {
+            None
+        };
+
         Ok(Self {
             listener,
             state: Arc::new(StaticState {
@@ -796,7 +839,9 @@ impl Proxy {
                 current: RwLock::new(Arc::new(reloadable)),
                 mode,
                 tls_acceptor,
+                metrics,
             }),
+            metrics_listener,
         })
     }
 
@@ -811,7 +856,18 @@ impl Proxy {
         self.listener.local_addr()
     }
 
+    /// Address of the metrics endpoint, when `[metrics].enabled` (tests/operability).
+    pub fn metrics_addr(&self) -> Option<SocketAddr> {
+        self.metrics_listener.as_ref().and_then(|l| l.local_addr().ok())
+    }
+
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Spawn the metrics server (B1) on its dedicated listener, if enabled. It shares the
+        // process-wide `Metrics` with the datapath and is wholly separate from data serving.
+        if let Some(metrics_listener) = self.metrics_listener {
+            let metrics = Arc::clone(&self.state.metrics);
+            tokio::spawn(serve_metrics(metrics_listener, metrics));
+        }
         loop {
             let (stream, client_addr) = self.listener.accept().await?;
             let state = Arc::clone(&self.state);
@@ -906,6 +962,38 @@ where
         .await
     {
         warn!(error = %e, client_ip = %client_addr.ip(), "connection error");
+    }
+}
+
+/// Serve the `/metrics` endpoint on its dedicated listener (B1). Plain h1; a scraper opens a
+/// short connection, GETs `/metrics`, reads the text. Anything that is not `GET /metrics`
+/// gets a 404 — no path reflection, no other surface.
+async fn serve_metrics(listener: TcpListener, metrics: Arc<Metrics>) {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else { continue };
+        let metrics = Arc::clone(&metrics);
+        tokio::spawn(async move {
+            let svc = service_fn(move |req: Request<Incoming>| {
+                let metrics = Arc::clone(&metrics);
+                async move { Ok::<_, Infallible>(metrics_response(&req, &metrics)) }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), svc)
+                .await;
+        });
+    }
+}
+
+/// `GET /metrics` → Prometheus text exposition; anything else → 404.
+fn metrics_response(req: &Request<Incoming>, metrics: &Metrics) -> Response<HyperBoxBody> {
+    if req.method() == hyper::Method::GET && req.uri().path() == "/metrics" {
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+            .body(full_body(metrics.render()))
+            .unwrap()
+    } else {
+        Response::builder().status(404).body(full_body("Not Found")).unwrap()
     }
 }
 

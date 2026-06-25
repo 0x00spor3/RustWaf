@@ -124,13 +124,18 @@ pub struct Config {
     /// cert management at scale (ACME/rotation/mTLS-PKI) is enterprise.
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Prometheus metrics exposition (B1). Default off → no separate listener. Served on a
+    /// dedicated loopback port (never the data port — see ARCHITECTURE §9).
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 impl Default for Config {
-    /// A valid, non-disruptive base for programmatic/test construction: detection-only,
-    /// all detection modules off, rate limiting off, cleartext. Production always supplies
-    /// `[proxy]`/`[waf]` from TOML; this default exists so external code never needs a
-    /// `Config { .. }` literal (forbidden by `#[non_exhaustive]`).
+    /// A valid, non-disruptive base for programmatic/test construction: detection-only mode
+    /// (detects but never blocks), the standard detection modules ON at their defaults
+    /// (GraphQL/gRPC off — opt-in), rate limiting off, cleartext, metrics off. Production
+    /// always supplies `[proxy]`/`[waf]` from TOML; this default exists so external code never
+    /// needs a `Config { .. }` literal (forbidden by `#[non_exhaustive]`).
     fn default() -> Self {
         Self {
             proxy: ProxyConfig::default(),
@@ -141,7 +146,33 @@ impl Default for Config {
             network: NetworkConfig::default(),
             resilience: ResilienceConfig::default(),
             tls: TlsConfig::default(),
+            metrics: MetricsConfig::default(),
         }
+    }
+}
+
+// ── Metrics (B1: Prometheus exposition) ────────────────────────────────────────
+
+/// Prometheus `/metrics` exposition. **OPEN baseline** (`BOUNDARY.md` §1.6). Served on a
+/// SEPARATE loopback listener — never the data port, which would let the WAF inspect/expose
+/// its own internal posture (blocked/rate-limited volumes are an info leak if reachable).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MetricsConfig {
+    /// Off by default → no metrics listener is bound.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where to serve `/metrics`. Default loopback (`127.0.0.1:9090`), never `0.0.0.0`.
+    #[serde(default = "default_metrics_listen")]
+    pub listen: std::net::SocketAddr,
+}
+
+fn default_metrics_listen() -> std::net::SocketAddr {
+    "127.0.0.1:9090".parse().expect("valid loopback addr")
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: false, listen: default_metrics_listen() }
     }
 }
 
@@ -995,6 +1026,7 @@ mod config_validation_tests {
             network: NetworkConfig::default(),
             resilience: ResilienceConfig::default(),
             tls: TlsConfig::default(),
+            metrics: MetricsConfig::default(),
         }
     }
 

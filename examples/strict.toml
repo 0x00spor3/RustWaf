@@ -49,6 +49,13 @@ trusted_proxies  = []
 client_ip_header = "X-Forwarded-For"
 trusted_hops     = 1
 
+[metrics]
+# Prometheus exposition on a SEPARATE listener — NEVER the data port. Keep it on
+# loopback (or a private interface scraped by your Prometheus), never public:
+# /metrics reveals internal posture (blocked / rate-limited volumes).
+enabled = true
+listen  = "127.0.0.1:9090"   # scrape GET http://127.0.0.1:9090/metrics
+
 [limits]
 max_body_size   = 262144     # 256 KiB — tighter; reject oversized bodies early
 max_header_size = 4096

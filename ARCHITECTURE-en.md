@@ -827,6 +827,31 @@ single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cer
 
 ---
 
+### Observability: logging + metrics (B1)
+
+- **Structured JSON logging** (`tracing` + `tracing_subscriber`, `EnvFilter`): one line per decision
+  (`request_id`, decision, score, contributions), plus `→ request`/`← response`.
+- **Prometheus metrics** (`[metrics]`, default **off**): text exposition on `GET /metrics`. **OPEN
+  baseline** (`BOUNDARY.md` §1.6); OTLP-push deferred (the counters are **exporter-neutral**, `render()`
+  is the Prometheus exporter → OTLP later is a second sink, not a rewrite).
+  - **SEPARATE listener** (`[metrics].listen`, default `127.0.0.1:9090`, loopback): **never** the data
+    port — `/metrics` exposes internal posture (blocked/rate_limited volumes) and is itself an info leak
+    if reachable; it would also be inspected by the WAF. **Fail-fast** bind at `bind` (busy port = boot
+    error). The service returns **404** to anything that is not `GET /metrics`. *Cardinal bite-test: the
+    data port does NOT expose `/metrics`.*
+  - **Metrics** (Prom conventions, **base unit = seconds**): `waf_requests_total{decision=...}` (**closed**
+    set: `allowed|blocked|rate_limited|bad_request|upstream_error|internal_error` — `internal_error` ≠
+    `upstream_error`: the WAF's own failure vs a failed backend); `waf_request_duration_seconds`
+    (**fixed-bucket histogram** + `_sum`/`_count`, **no in-process quantiles** → `histogram_quantile()` at
+    scrape time); `waf_up`, `waf_build_info`.
+  - **Cardinality rule (constraint)**: NEVER user-derived labels (no `path`/`ip`/`rule_id`) → a future
+    per-rule breakdown is a separate capped metric, not a label on `requests_total`.
+  - **Instrumentation = pure side effect**: `AtomicU64` relaxed counters, no lock/`.await` on the hot
+    path; recorded at a **single point** (`handle`, via a returned `Outcome`). Verdicts are unchanged —
+    proven by the unchanged validation.
+
+---
+
 ## 10. Testing strategy
 
 - **Unit**: every parser and module with clean and obfuscated payloads.

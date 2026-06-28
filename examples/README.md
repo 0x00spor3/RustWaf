@@ -40,6 +40,17 @@ When enabled the listener serves **only** TLS — there is no cleartext fallback
 unreadable cert is a fatal boot error (fail-closed). Cert management at scale (ACME, rotation,
 mTLS) is an enterprise concern; the OPEN core reads a cert from file.
 
+## Extensibility & observability (`strict.toml`)
+
+All opt-in and off by default; [`strict.toml`](strict.toml) shows each one wired up:
+
+- **`[metrics]`** — Prometheus `/metrics` on a separate loopback listener (never on the data port).
+- **`[modules.crs]`** — import OWASP CRS / ModSecurity `SecRule` files (subset evaluator; a boot
+  report lists any unsupported directives that were skipped).
+- **`[modules.wasm]`** — load custom [Proxy-Wasm](https://github.com/proxy-wasm/spec) `.wasm` filters
+  to add app-specific rules without forking the core. See [`wasm-plugin/`](wasm-plugin/) for a
+  buildable example.
+
 ## How the knobs map to aggressiveness
 
 - **`mode`** — `detection-only` logs but never blocks; `blocking` enforces (403/429).

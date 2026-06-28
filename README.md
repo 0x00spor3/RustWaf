@@ -39,17 +39,27 @@ cert-from-file; one port serves HTTP/1.1 **and** HTTP/2 via ALPN/`auto`; opt-in 
 fail-closed — no cleartext downgrade), and a **fast-path** that skips inspection on provably
 benign traffic (equivalence tested).
 
+**Extensibility & observability** (all OPEN, all default-off — see `BOUNDARY.md`):
+
+- **WASM plugins** — a [Proxy-Wasm](https://github.com/proxy-wasm/spec) runtime on `wasmi`
+  loads `.wasm` filters as modules without forking the core (`[modules.wasm]`); instance pool,
+  per-request fuel/memory DoS caps, fail-closed. See [`examples/wasm-plugin/`](examples/wasm-plugin/).
+- **OWASP CRS / ModSecurity import** — a `seclang` parser + subset evaluator runs imported
+  `SecRule` files as a module (`[modules.crs]`), with a boot skip-report for unsupported directives.
+- **Prometheus metrics** — opt-in `/metrics` export on a separate loopback listener (`[metrics]`).
+
 ---
 
-## Workspace layout (6 crates)
+## Workspace layout (7 crates)
 
 ```
 waf-core ────────┐ (base types, no internal dependencies)
-   ▲   ▲   ▲      │
-   │   │   │      ▼
-   │   │   └── waf-normalizer   (Phase 2: decode + NFKC + parsing + limits)
-   │   └────── waf-pipeline     (phased orchestrator + anomaly scoring)
-   └────────── waf-detection    (modules/rules + ContentPrefilter fast-path)
+   ▲   ▲   ▲  ▲   │
+   │   │   │  │   ▼
+   │   │   │  └── waf-normalizer   (Phase 2: decode + NFKC + parsing + limits)
+   │   │   └───── waf-pipeline     (phased orchestrator + anomaly scoring)
+   │   └───────── waf-detection    (modules/rules + ContentPrefilter fast-path)
+   └───────────── waf-wasm         (Proxy-Wasm runtime on wasmi; loads .wasm filters as modules)
                    ▲
          ┌─────────┴──────────┐
    waf-proxy (the binary)   waf-corpus (validation/tuning/fast-path: lib + tests + examples)
@@ -61,8 +71,9 @@ waf-core ────────┐ (base types, no internal dependencies)
 | **waf-normalizer** | Phase 2: percent-decode (double-encoding-aware), NFKC, query/cookie/body parsing, defensive limits |
 | **waf-pipeline** | `Pipeline`: runs modules per phase, accumulates the score, decides the verdict |
 | **waf-detection** | The modules with their `*_RULES` tables; `ContentPrefilter` (scope-aware fast-path) |
+| **waf-wasm** | Proxy-Wasm runtime on `wasmi`: loads `.wasm` filters as `WafModule`s (instance pool, fuel/memory DoS caps, fail-closed); `[modules.wasm]`, default off |
 | **waf-proxy** | The **binary**: hyper/tokio reverse proxy, config loading, fail-open/closed, hot reload |
-| **waf-corpus** | The 240 validation cases + runner + metrics. **Not** in production: it is the evidence (oracle) tool |
+| **waf-corpus** | The 260 validation cases + runner + metrics. **Not** in production: it is the evidence (oracle) tool |
 
 ### Request flow (`waf-proxy/src/lib.rs::handle`)
 
@@ -107,13 +118,13 @@ on our code (`enqueue→verdict`), isolated from network and upstream:
   a bug of ours must not lower availability below the no-WAF baseline).
 
 **Validation — the basis of trust** (Phase 7, §7/§10). Detection is **frozen** and measured
-by a versioned corpus (`waf-corpus`): **240 cases**, **100% detection-recall** on the
+by a versioned corpus (`waf-corpus`): **260 cases**, **100% detection-recall** on the
 tracked-malicious cases and **0% false positives** at PL3 (the few documented `ExpectedMiss`
 deferrals aside). Weights and threshold (config **C2**: `critical=6`, `block_threshold=5`)
 are justified by the corpus evidence, not inherited. NB **detection-recall** (a rule matches)
 is distinct from **blocking-recall** (`score ≥ threshold`).
 
-**Robustness (Phase 8, §13).** Fuzzing of the 7 custom parsers (cargo-fuzz/ASan, Linux/CI) +
+**Robustness (Phase 8, §13).** Fuzzing of the 9 custom parsers (cargo-fuzz/ASan, Linux/CI) +
 always-on cross-platform **proptest** invariants; ReDoS **impossible by construction**
 (linear-time `regex` engine, no backtracking); differential canonicalization against an
 independent oracle. **0 real findings.**

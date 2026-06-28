@@ -41,7 +41,7 @@ The complete datapath and everything needed to protect a single node.
 
 ### 1.5 State and rate limiting (single-node)
 - **In-process L7 rate limiting** (token bucket).
-- **`StateStore`** trait + **in-memory** implementation (`waf-state`). *(This is the extension point onto which enterprise multi-node plugs in.)*
+- **`StateStore`** trait + **in-memory** implementation (`InMemoryStateStore`, in `waf-core`). *(This is the extension point onto which enterprise multi-node plugs in.)*
 
 ### 1.6 Single-node operability
 - External TOML config, semantic validation, per-scenario fail-open/closed (`[resilience]`).

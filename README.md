@@ -1,5 +1,9 @@
 # Light WAF (Layer 7)
 
+[![crates.io](https://img.shields.io/crates/v/waf-proxy.svg)](https://crates.io/crates/waf-proxy)
+[![docs.rs](https://img.shields.io/docsrs/waf-core)](https://docs.rs/waf-core)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A Web Application Firewall in **Rust** operating as a **reverse proxy** at Layer 7: it
 inspects every HTTP request, applies detection rules, accumulates an **anomaly score**
 (CRS-style model), and decides **Allow / Block (403) / Reject (400 | 429)** before

@@ -1,11 +1,17 @@
 [package]
-license = "Apache-2.0"
 name = "waf-pipeline"
-version = "0.1.0"
-edition = "2021"
+description = "Phased detection orchestrator and CRS-style cumulative anomaly scoring for Light WAF."
+keywords = ["waf", "security", "firewall", "http"]
+categories = ["web-programming", "network-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-waf-core = { path = "../waf-core" }
+waf-core = { workspace = true }
 tracing = "0.1"
 
 [dev-dependencies]

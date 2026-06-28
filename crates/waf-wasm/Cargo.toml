@@ -1,18 +1,24 @@
 [package]
-license = "Apache-2.0"
 name = "waf-wasm"
-version = "0.1.0"
-edition = "2021"
+description = "Proxy-Wasm runtime (on wasmi) for Light WAF: load .wasm filters as detection modules, with instance pooling and fuel/memory DoS caps."
+keywords = ["waf", "security", "wasm", "proxy-wasm"]
+categories = ["web-programming", "wasm"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 # Pinned exactly to the version validated by the B3-0 probe (reentrant malloc + fuel +
 # StoreLimits memory cap). Bumping wasmi must re-run those load-bearing cases.
 wasmi = "=1.1.0"
-waf-core = { path = "../waf-core" }
+waf-core = { workspace = true }
 tracing = "0.1"
 bytes = "1"
 
 [dev-dependencies]
 wat = "1"
 # Test builds pull the testkit RequestContext builder.
-waf-core = { path = "../waf-core", features = ["testkit"] }
+waf-core = { workspace = true, features = ["testkit"] }

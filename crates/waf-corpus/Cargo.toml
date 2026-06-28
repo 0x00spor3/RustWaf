@@ -1,17 +1,21 @@
 [package]
-license = "Apache-2.0"
 name = "waf-corpus"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# Internal validation/oracle tooling — never published to crates.io.
+publish = false
 
 # Validation corpus (Fase 7 / Pilastro 1): a versioned, reproducible set of
 # malicious + benign cases run against the real pipeline. Library so it is reusable
 # by Pilastro 2 (threshold tuning) and Pilastro 3 (fast-path equivalence oracle).
 [dependencies]
-waf-core = { path = "../waf-core", features = ["testkit"] }
-waf-detection = { path = "../waf-detection" }
-waf-normalizer = { path = "../waf-normalizer" }
-waf-pipeline = { path = "../waf-pipeline" }
+waf-core = { workspace = true, features = ["testkit"] }
+waf-detection = { workspace = true }
+waf-normalizer = { workspace = true }
+waf-pipeline = { workspace = true }
 
 # Fase 9: microbench of the isolated inspection path (enqueue→verdetto). criterion
 # without default features → no gnuplot/plotters/HTML report (lighter, faster build),

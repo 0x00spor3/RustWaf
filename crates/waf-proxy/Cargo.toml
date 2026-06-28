@@ -1,8 +1,14 @@
 [package]
-license = "Apache-2.0"
 name = "waf-proxy"
-version = "0.1.0"
-edition = "2021"
+description = "Light WAF: a fast, modular Layer-7 Web Application Firewall reverse proxy in Rust."
+keywords = ["waf", "security", "firewall", "reverse-proxy", "proxy"]
+categories = ["web-programming::http-server", "network-programming", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "waf"
@@ -13,11 +19,11 @@ name = "waf_proxy"
 path = "src/lib.rs"
 
 [dependencies]
-waf-core = { path = "../waf-core" }
-waf-normalizer = { path = "../waf-normalizer" }
-waf-pipeline = { path = "../waf-pipeline" }
-waf-detection = { path = "../waf-detection" }
-waf-wasm = { path = "../waf-wasm" }
+waf-core = { workspace = true }
+waf-normalizer = { workspace = true }
+waf-pipeline = { workspace = true }
+waf-detection = { workspace = true }
+waf-wasm = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "signal"] }
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1", "http2", "server-auto"] }

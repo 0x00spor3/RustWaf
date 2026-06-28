@@ -1,11 +1,17 @@
 [package]
-license = "Apache-2.0"
 name = "waf-normalizer"
-version = "0.1.0"
-edition = "2021"
+description = "Request normalization and canonicalization for Light WAF: double-encoding-aware percent-decode, NFKC, body/query/cookie parsing, defensive limits."
+keywords = ["waf", "security", "normalization", "http"]
+categories = ["web-programming", "parser-implementations"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-waf-core = { path = "../waf-core" }
+waf-core = { workspace = true }
 unicode-normalization = "0.1"
 serde_json = "1"
 tracing = "0.1"

@@ -1,8 +1,14 @@
 [package]
-license = "Apache-2.0"
 name = "waf-core"
-version = "0.1.0"
-edition = "2021"
+description = "Core types for Light WAF: Config, Decision, RequestContext, the WafModule contract, and the StateStore extension seam."
+keywords = ["waf", "security", "firewall", "http"]
+categories = ["web-programming", "network-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

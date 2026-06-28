@@ -1,15 +1,21 @@
 [package]
-license = "Apache-2.0"
 name = "waf-detection"
-version = "0.1.0"
-edition = "2021"
+description = "Detection modules (SQLi, XSS, RCE, traversal, SSRF, XXE, and more) and the scope-aware fast-path prefilter for Light WAF."
+keywords = ["waf", "security", "owasp", "detection"]
+categories = ["web-programming", "network-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-waf-core = { path = "../waf-core" }
-waf-normalizer = { path = "../waf-normalizer" }
+waf-core = { workspace = true }
+waf-normalizer = { workspace = true }
 regex = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-waf-pipeline = { path = "../waf-pipeline" }
+waf-pipeline = { workspace = true }
 bytes = "1"

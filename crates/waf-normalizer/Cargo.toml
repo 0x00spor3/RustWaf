@@ -1,6 +1,7 @@
 [package]
 name = "waf-normalizer"
 description = "Request normalization and canonicalization for Light WAF: double-encoding-aware percent-decode, NFKC, body/query/cookie parsing, defensive limits."
+readme = "README.md"
 keywords = ["waf", "security", "normalization", "http"]
 categories = ["web-programming", "parser-implementations"]
 version.workspace = true

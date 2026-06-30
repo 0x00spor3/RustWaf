@@ -1,6 +1,7 @@
 [package]
 name = "waf-pipeline"
 description = "Phased detection orchestrator and CRS-style cumulative anomaly scoring for Light WAF."
+readme = "README.md"
 keywords = ["waf", "security", "firewall", "http"]
 categories = ["web-programming", "network-programming"]
 version.workspace = true

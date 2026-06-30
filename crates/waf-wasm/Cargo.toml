@@ -1,6 +1,7 @@
 [package]
 name = "waf-wasm"
 description = "Proxy-Wasm runtime (on wasmi) for Light WAF: load .wasm filters as detection modules, with instance pooling and fuel/memory DoS caps."
+readme = "README.md"
 keywords = ["waf", "security", "wasm", "proxy-wasm"]
 categories = ["web-programming", "wasm"]
 version.workspace = true

@@ -1,6 +1,7 @@
 [package]
 name = "waf-core"
 description = "Core types for Light WAF: Config, Decision, RequestContext, the WafModule contract, and the StateStore extension seam."
+readme = "README.md"
 keywords = ["waf", "security", "firewall", "http"]
 categories = ["web-programming", "network-programming"]
 version.workspace = true

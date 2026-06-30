@@ -1,6 +1,7 @@
 [package]
 name = "waf-detection"
 description = "Detection modules (SQLi, XSS, RCE, traversal, SSRF, XXE, and more) and the scope-aware fast-path prefilter for Light WAF."
+readme = "README.md"
 keywords = ["waf", "security", "owasp", "detection"]
 categories = ["web-programming", "network-programming"]
 version.workspace = true

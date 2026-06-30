@@ -1,6 +1,7 @@
 [package]
 name = "waf-proxy"
 description = "Light WAF: a fast, modular Layer-7 Web Application Firewall reverse proxy in Rust."
+readme = "README.md"
 keywords = ["waf", "security", "firewall", "reverse-proxy", "proxy"]
 categories = ["web-programming::http-server", "network-programming", "command-line-utilities"]
 version.workspace = true
